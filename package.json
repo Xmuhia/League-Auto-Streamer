@@ -1,29 +1,39 @@
 {
   "name": "league-auto-streamer",
   "version": "1.0.0",
-  "main": "public/electron.js",
+  "description": "Automatically stream League of Legends games to Twitch",
+  "author": "Brendan",
+  "license": "ISC",
+  "main": "main.cjs",
   "homepage": "./",
+  "keywords": [
+    "league of legends",
+    "twitch",
+    "obs",
+    "auto-streamer"
+  ],
   "scripts": {
     "start": "react-scripts start",
-    "build": "react-scripts build",
+    "build": "react-scripts build && mkdir -p build/services && cp -r public/services/* build/services/ && echo '{\"type\":\"commonjs\"}' > build/package.json",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "electron-dev": "concurrently \"BROWSER=none npm start\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron": "electron .",
+    "electron-dev": "concurrently \"cross-env BROWSER=none npm start\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
+    "electron": "./electron-starter.js",
     "electron-build": "npm run build && electron-builder",
+    "electron-build-win": "npm run build && electron-builder --win --config.win.icon=null",
+    "electron-build-win-portable": "npm run build && electron-builder --win portable --config.win.icon=null --config.asar=false",
+    "electron-build-mac": "npm run build && NODE_OPTIONS='' electron-builder --mac",
+    "electron-build-all": "npm run build && electron-builder -mw",
     "postinstall": "electron-builder install-app-deps"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "Automatically stream League of Legends games to Twitch",
   "dependencies": {
     "axios": "^1.8.4",
-    "electron": "^35.1.2",
-    "electron-builder": "^26.0.12",
+    "electron-is-dev": "^3.0.1",
     "electron-store": "^10.0.1",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "obs-websocket-js": "^5.0.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",
@@ -32,46 +42,71 @@
     "@mui/icons-material": "^7.0.1",
     "@mui/material": "^7.0.1",
     "concurrently": "^9.1.2",
-    "electron-is-dev": "^3.0.1",
+    "cross-env": "^7.0.3",
+    "electron": "^35.1.2",
+    "electron-builder": "^26.0.12",
     "electron-reload": "^2.0.0-alpha.1",
-    "obs-websocket-js": "^5.0.6",
     "react-scripts": "^5.0.1",
     "wait-on": "^8.0.3"
   },
   "build": {
-    "appId": "com.yourname.leagueautostreamer",
+    "appId": "com.brendanmuhia.leagueautostreamer",
+    "productName": "League Auto-Streamer",
     "files": [
       "build/**/*",
       "node_modules/**/*",
-      "public/electron.js",
-      "package.json"
+      "main.cjs"
     ],
-    "directories": {
-      "buildResources": "assets"
+    "extraMetadata": {
+      "main": "main.cjs"
     },
-    "win": {
-      "target": "nsis"
+    "directories": {
+      "buildResources": "assets",
+      "output": "dist"
     },
     "mac": {
-      "category": "public.app-category.utilities"
+      "category": "public.app-category.utilities",
+      "target": ["dmg", "zip"],
+      "icon": "assets/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "darkModeSupport": true
+    },
+    "dmg": {
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ],
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    },
+    "win": {
+      "target": [
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Utility"
     }
   },
   "eslintConfig": {
-    "extends": [
-      "react-app",
-      "react-app/jest"
-    ]
+    "extends": ["react-app", "react-app/jest"],
+    "rules": {
+      "no-unused-vars": "warn"
+    }
   },
   "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
+    "production": [">0.2%", "not dead", "not op_mini all"],
+    "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"]
   }
 }
