@@ -14,17 +14,18 @@
   ],
   "scripts": {
     "start": "react-scripts start",
-    "build": "react-scripts build && mkdir -p build/services && cp -r public/services/* build/services/ && echo '{\"type\":\"commonjs\"}' > build/package.json",
+    "build": "react-scripts build && shx mkdir -p build/services && shx cp -r public/services/* build/services/ && shx echo {\\\"type\\\":\\\"commonjs\\\"} > build/package.json",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "electron-dev": "concurrently \"cross-env BROWSER=none npm start\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
     "electron": "./electron-starter.js",
     "electron-build": "npm run build && electron-builder",
-    "electron-build-win": "npm run build && electron-builder --win --config.win.icon=null",
-    "electron-build-win-portable": "npm run build && electron-builder --win portable --config.win.icon=null --config.asar=false",
+    "electron-build-win": "npm run build && electron-builder --win",
+    "electron-build-win-portable": "npm run build && electron-builder --win portable",
     "electron-build-mac": "npm run build && NODE_OPTIONS='' electron-builder --mac",
     "electron-build-all": "npm run build && electron-builder -mw",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "package-win": "npm run build && electron-packager . \"League Auto-Streamer\" --platform=win32 --arch=x64 --out=dist/packager --overwrite --extra-resource=node_modules/electron/dist/icudtl.dat --extra-resource=ffmpeg.dll"
   },
   "dependencies": {
     "axios": "^1.8.4",
@@ -45,17 +46,43 @@
     "cross-env": "^7.0.3",
     "electron": "^35.1.2",
     "electron-builder": "^26.0.12",
+    "electron-packager": "^17.1.2",
     "electron-reload": "^2.0.0-alpha.1",
     "react-scripts": "^5.0.1",
+    "shx": "^0.3.4",
     "wait-on": "^8.0.3"
   },
   "build": {
+    "asar": true,
+    "asarUnpack": [
+      "**/*.dat",
+      "**/icudtl.dat",
+      "**/locales/**"
+    ],
     "appId": "com.brendanmuhia.leagueautostreamer",
     "productName": "League Auto-Streamer",
     "files": [
       "build/**/*",
       "node_modules/**/*",
-      "main.cjs"
+      "main.cjs",
+      "public/**/*",
+      "ffmpeg.dll",
+      "node_modules/electron/dist/icudtl.dat"
+    ],
+    "extraResources": [
+      { "from": "public/services", "to": "services" },
+      { "from": "node_modules/electron/dist/locales", "to": "locales" },
+      { "from": "node_modules/electron/dist/icudtl.dat", "to": "icudtl.dat" }
+    ],
+    "extraFiles": [
+      {
+        "from": "ffmpeg.dll",
+        "to": "ffmpeg.dll"
+      },
+      {
+        "from": "node_modules/electron/dist/icudtl.dat",
+        "to": "icudtl.dat"
+      }
     ],
     "extraMetadata": {
       "main": "main.cjs"
@@ -67,7 +94,7 @@
     "mac": {
       "category": "public.app-category.utilities",
       "target": ["dmg", "zip"],
-      "icon": "assets/icon.icns",
+      "icon": null,
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "darkModeSupport": true
