@@ -2,46 +2,111 @@ const OBSWebSocket = require('obs-websocket-js').default;
 
 class StreamService {
   constructor() {
-    this.obs = new OBSWebSocket();
+    this.obs = null;
     this.connected = false;
     this.streaming = false;
     this.currentGame = null;
-    
-    // Set up event handlers
-    this.obs.on('StreamStateChanged', (data) => {
-      this.streaming = data.outputActive;
-      console.log(`Stream state changed: ${this.streaming ? 'streaming' : 'not streaming'}`);
-    });
   }
   
   async connect(address, password) {
     try {
-      // Parse address
+      // Create a new instance each time to avoid stale connections
+      this.obs = new OBSWebSocket();
+      
+      // Set up event handlers before connecting
+      this.obs.on('ConnectionClosed', (data) => {
+        console.log(`OBS connection closed: ${JSON.stringify(data)}`);
+        this.connected = false;
+      });
+      
+      this.obs.on('StreamStateChanged', (data) => {
+        this.streaming = data.outputActive;
+        console.log(`Stream state changed: ${this.streaming ? 'streaming' : 'not streaming'}`);
+      });
+      
+      // Parse address - support both formats like "localhost:4455" and full URLs
       let url = address;
       if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
         url = `ws://${url}`;
       }
       
-      // Connect to OBS (v5 API)
-      await this.obs.connect(url, password);
+      console.log(`Attempting to connect to OBS at: ${url}`);
+      
+      // Try multiple connection options if the primary one fails
+      let connected = false;
+      let lastError = null;
+      
+      // Try the provided URL first
+      try {
+        await this.obs.connect(url, password);
+        connected = true;
+        console.log(`Connected to OBS WebSocket at ${url}`);
+      } catch (error) {
+        lastError = error;
+        console.log(`Primary connection failed: ${error.message}`);
+      }
+      
+      // If primary connection failed, try IPv6 alternatives
+      if (!connected) {
+        // Extract the port from the URL
+        const portMatch = url.match(/:(\d+)/);
+        const port = portMatch ? portMatch[1] : '4455';
+        
+        // IPv6 alternatives to try
+        const ipv6Alternatives = [
+          `ws://[::1]:${port}`,               // IPv6 localhost
+          `ws://[::ffff:127.0.0.1]:${port}`   // IPv4-mapped IPv6 address
+        ];
+        
+        for (const ipv6Url of ipv6Alternatives) {
+          try {
+            console.log(`Trying IPv6 alternative: ${ipv6Url}`);
+            await this.obs.connect(ipv6Url, password);
+            connected = true;
+            console.log(`Connected to OBS WebSocket using IPv6: ${ipv6Url}`);
+            break;
+          } catch (error) {
+            console.log(`IPv6 connection failed: ${error.message}`);
+          }
+        }
+      }
+      
+      // If all connection attempts failed, throw the original error
+      if (!connected) {
+        throw lastError || new Error('Failed to connect to OBS WebSocket');
+      }
+      
       this.connected = true;
       
       // Check current streaming status
       const { outputActive } = await this.obs.call('GetStreamStatus');
       this.streaming = outputActive;
       
-      console.log('Connected to OBS WebSocket');
+      console.log('Connected to OBS WebSocket successfully');
       return true;
     } catch (error) {
-      console.error('Error connecting to OBS:', error);
       this.connected = false;
-      throw new Error(`Failed to connect to OBS: ${error.message}`);
+      
+      // Provide more specific error messages
+      console.error('Error connecting to OBS:', error);
+      
+      let errorMessage = 'Failed to connect to OBS';
+      
+      if (error.code === 1006) {
+        errorMessage += ': Connection closed abnormally. Check that OBS is running, WebSocket server is enabled, and port 4455 is correct. Also ensure no firewall is blocking the connection.';
+      } else if (error.code === 4009) {
+        errorMessage += ': Authentication failed. Check your password.';
+      } else if (error.message) {
+        errorMessage += `: ${error.message}`;
+      }
+      
+      throw new Error(errorMessage);
     }
   }
   
   async disconnect() {
     try {
-      if (this.connected) {
+      if (this.connected && this.obs) {
         await this.obs.disconnect();
         this.connected = false;
         console.log('Disconnected from OBS WebSocket');
@@ -55,7 +120,7 @@ class StreamService {
   
   async startStream(gameId, accountName) {
     try {
-      if (!this.connected) {
+      if (!this.connected || !this.obs) {
         throw new Error('Not connected to OBS');
       }
       
@@ -88,7 +153,7 @@ class StreamService {
   
   async stopStream() {
     try {
-      if (!this.connected) {
+      if (!this.connected || !this.obs) {
         throw new Error('Not connected to OBS');
       }
       
@@ -118,6 +183,10 @@ class StreamService {
   
   async setUpLeagueScene() {
     try {
+      if (!this.connected || !this.obs) {
+        throw new Error('Not connected to OBS');
+      }
+      
       // Get scenes list
       const { scenes } = await this.obs.call('GetSceneList');
       const leagueScene = scenes.find(scene => scene.sceneName === 'League of Legends');
@@ -160,6 +229,10 @@ class StreamService {
   }
   
   async createLeagueGameSource() {
+    if (!this.connected || !this.obs) {
+      throw new Error('Not connected to OBS');
+    }
+    
     // Create game capture source for League
     await this.obs.call('CreateInput', {
       sceneName: 'League of Legends',
