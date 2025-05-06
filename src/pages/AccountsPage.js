@@ -25,12 +25,14 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Chip
+  Chip,
+  Tooltip
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import VisibilityIcon from '@mui/icons-material/Visibility';
+import InfoIcon from '@mui/icons-material/Info';
 
 // League of Legends regions
 const regions = [
@@ -74,7 +76,7 @@ function AccountsPage({ accounts, setAccounts }) {
     e.preventDefault();
     
     if (!newAccount.summonerName) {
-      setError('Please enter a summoner name');
+      setError('Please enter a Riot ID or Game Name');
       return;
     }
     
@@ -94,7 +96,11 @@ function AccountsPage({ accounts, setAccounts }) {
         region: 'NA1'
       });
       
-      setSuccess(`Account "${account.summonerName}" added successfully`);
+      const displayName = account.gameName && account.tagLine 
+        ? `${account.gameName}#${account.tagLine}` 
+        : account.summonerName;
+        
+      setSuccess(`Account "${displayName}" added successfully`);
       
       // Clear success message after 5 seconds
       setTimeout(() => {
@@ -179,10 +185,14 @@ function AccountsPage({ accounts, setAccounts }) {
         region: account.region
       });
       
+      const displayName = account.gameName && account.tagLine 
+        ? `${account.gameName}#${account.tagLine}` 
+        : account.summonerName;
+        
       if (gameData) {
-        setSuccess(`${account.summonerName} is currently in game!`);
+        setSuccess(`${displayName} is currently in game!`);
       } else {
-        setSuccess(`${account.summonerName} is not in a game right now.`);
+        setSuccess(`${displayName} is not in a game right now.`);
       }
       
       // Clear success message after 5 seconds
@@ -194,6 +204,14 @@ function AccountsPage({ accounts, setAccounts }) {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Get display name for account
+  const getDisplayName = (account) => {
+    if (account.gameName && account.tagLine) {
+      return `${account.gameName}#${account.tagLine}`;
+    }
+    return account.summonerName;
   };
 
   return (
@@ -237,13 +255,20 @@ function AccountsPage({ accounts, setAccounts }) {
               <Grid item xs={12} md={5}>
                 <TextField
                   fullWidth
-                  label="Summoner Name"
+                  label="Riot ID / Game Name"
                   name="summonerName"
                   value={newAccount.summonerName}
                   onChange={handleInputChange}
-                  placeholder="Enter League of Legends summoner name"
+                  placeholder="Enter GameName or GameName#TagLine"
                   disabled={loading}
                   required
+                  InputProps={{
+                    endAdornment: (
+                      <Tooltip title="You can enter either just the game name (e.g., 'PlayerName') or the full Riot ID with tagline (e.g., 'PlayerName#NA1')">
+                        <InfoIcon color="action" fontSize="small" sx={{ ml: 1 }} />
+                      </Tooltip>
+                    )
+                  }}
                 />
               </Grid>
               
@@ -256,6 +281,7 @@ function AccountsPage({ accounts, setAccounts }) {
                   value={newAccount.region}
                   onChange={handleInputChange}
                   disabled={loading}
+                  helperText="Required if not using GameName#TagLine format"
                 >
                   {regions.map((region) => (
                     <MenuItem key={region.code} value={region.code}>
@@ -300,7 +326,7 @@ function AccountsPage({ accounts, setAccounts }) {
               <Table>
                 <TableHead>
                   <TableRow>
-                    <TableCell>Summoner Name</TableCell>
+                    <TableCell>Riot ID</TableCell>
                     <TableCell>Region</TableCell>
                     <TableCell align="center">Status</TableCell>
                     <TableCell align="center">Active</TableCell>
@@ -312,7 +338,7 @@ function AccountsPage({ accounts, setAccounts }) {
                     <TableRow key={account.id}>
                       <TableCell>
                         <Typography variant="body1">
-                          {account.summonerName}
+                          {getDisplayName(account)}
                         </Typography>
                       </TableCell>
                       <TableCell>
@@ -361,7 +387,7 @@ function AccountsPage({ accounts, setAccounts }) {
         <DialogTitle>Remove Account</DialogTitle>
         <DialogContent>
           <Typography variant="body1">
-            Are you sure you want to remove the account "{accountToDelete?.summonerName}"?
+            Are you sure you want to remove the account "{accountToDelete ? getDisplayName(accountToDelete) : ''}"?
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -381,6 +407,8 @@ function AccountsPage({ accounts, setAccounts }) {
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             Enter your Riot Games API key to enable account monitoring.
             You can get an API key from the <a href="https://developer.riotgames.com" target="_blank" rel="noopener noreferrer">Riot Developer Portal</a>.
+            <br/><br/>
+            <strong>Note:</strong> Development API keys expire after 24 hours and need to be renewed.
           </Typography>
           <TextField
             fullWidth
