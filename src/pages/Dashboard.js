@@ -167,11 +167,11 @@ function Dashboard({ isMonitoring, toggleMonitoring, accounts }) {
                       sx={{ mb: 1 }} 
                     />
                     <Typography variant="h6" component="div">
-                      {currentlyStreaming.summonerName}
+                      {currentlyStreaming.summonerName || currentlyStreaming.gameName || 'Unknown'}
                     </Typography>
                   </Box>
                   <Typography variant="body2" color="text.secondary">
-                    Game ID: {currentlyStreaming.gameId}
+                    Game ID: {currentlyStreaming.gameId || 'Unknown'}
                   </Typography>
                 </>
               ) : (
@@ -254,14 +254,14 @@ function Dashboard({ isMonitoring, toggleMonitoring, accounts }) {
                         <CardContent>
                           <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
                             <Avatar sx={{ width: 32, height: 32, mr: 1, bgcolor: 'primary.main' }}>
-                              {account.summonerName.charAt(0).toUpperCase()}
+                              {(account.summonerName?.charAt(0) || account.gameName?.charAt(0) || '?').toUpperCase()}
                             </Avatar>
                             <Typography variant="subtitle1" component="div">
-                              {account.summonerName}
+                              {account.summonerName || account.gameName || 'Unknown User'}
                             </Typography>
                           </Box>
                           <Typography variant="body2" color="text.secondary">
-                            Region: {account.region}
+                            Region: {account.region || 'Unknown'}
                           </Typography>
                           <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 2 }}>
                             <Chip 
@@ -270,7 +270,7 @@ function Dashboard({ isMonitoring, toggleMonitoring, accounts }) {
                               size="small"
                             />
                             <Typography variant="caption" color="text.secondary">
-                              ID: {account.summonerId.substring(0, 8)}...
+                              ID: {account.summonerId ? `${account.summonerId.substring(0, 8)}...` : 'N/A'}
                             </Typography>
                           </Box>
                         </CardContent>
