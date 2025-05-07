@@ -82,6 +82,23 @@ async function initializeApp() {
       console.log(`Game detected for ${account.summonerName}`);
 
       try {
+        // Update the account's state in the stored accounts
+        const accounts = store.get('accounts') || [];
+        const filteredAccounts = accounts.filter(acc => acc !== null);
+        const updatedAccounts = filteredAccounts.map(acc => {
+          if (acc && acc.id === account.id) {
+            return { ...acc, inGame: true, gameId: gameData.gameId };
+          }
+          return acc;
+        });
+        
+        store.set('accounts', updatedAccounts);
+
+        // Send notification to the frontend about updated accounts
+        if (mainWindow) {
+          mainWindow.webContents.send('accounts-updated', updatedAccounts);
+        }
+
         const streamSettings = settings.streaming || {};
 
         if (streamSettings.autoStart) {
@@ -108,7 +125,7 @@ async function initializeApp() {
           }
         }
       } catch (error) {
-        console.error('Error starting stream:', error);
+        console.error('Error handling game detection:', error);
       }
     });
 
@@ -116,9 +133,24 @@ async function initializeApp() {
       console.log(`Game ended for ${account.summonerName}`);
 
       try {
+        // Update the account's state in the stored accounts
         const accounts = store.get('accounts') || [];
         const filteredAccounts = accounts.filter(acc => acc !== null);
-        const activeAccounts = filteredAccounts.filter(acc => acc.isActive);
+        const updatedAccounts = filteredAccounts.map(acc => {
+          if (acc && acc.id === account.id) {
+            return { ...acc, inGame: false, gameId: null };
+          }
+          return acc;
+        });
+        
+        store.set('accounts', updatedAccounts);
+
+        // Send notification to the frontend about updated accounts
+        if (mainWindow) {
+          mainWindow.webContents.send('accounts-updated', updatedAccounts);
+        }
+
+        const activeAccounts = updatedAccounts.filter(acc => acc.isActive);
         const anyInGame = activeAccounts.some(acc => acc.inGame && acc.id !== account.id);
 
         if (!anyInGame && streamService.connected && streamService.streaming) {
@@ -129,7 +161,7 @@ async function initializeApp() {
           }
         }
       } catch (error) {
-        console.error('Error stopping stream:', error);
+        console.error('Error handling game end:', error);
       }
     });
 
@@ -193,7 +225,29 @@ ipcMain.handle('check-account-game', async (event, account) => {
     if (!account || !account.summonerName || !account.region) {
       throw new Error('Invalid account data');
     }
-    return await leagueService.checkActiveGame(account.summonerName, account.region);
+    
+    const gameData = await leagueService.checkActiveGame(account.summonerName, account.region);
+    
+    // Update the account's game status in the store
+    if (gameData) {
+      const accounts = store.get('accounts') || [];
+      const filteredAccounts = accounts.filter(acc => acc !== null);
+      const updatedAccounts = filteredAccounts.map(acc => {
+        if (acc && acc.id === account.id) {
+          return { ...acc, inGame: gameData.inGame, gameId: gameData.gameId };
+        }
+        return acc;
+      });
+      
+      store.set('accounts', updatedAccounts);
+      
+      // Notify the UI of the updated accounts
+      if (mainWindow) {
+        mainWindow.webContents.send('accounts-updated', updatedAccounts);
+      }
+    }
+    
+    return gameData;
   } catch (error) {
     console.error('Error checking account game:', error);
     return null;
