@@ -117,7 +117,8 @@ async function initializeApp() {
 
       try {
         const accounts = store.get('accounts') || [];
-        const activeAccounts = accounts.filter(acc => acc.isActive);
+        const filteredAccounts = accounts.filter(acc => acc !== null);
+        const activeAccounts = filteredAccounts.filter(acc => acc.isActive);
         const anyInGame = activeAccounts.some(acc => acc.inGame && acc.id !== account.id);
 
         if (!anyInGame && streamService.connected && streamService.streaming) {
@@ -142,16 +143,22 @@ async function initializeApp() {
 // IPC handlers
 
 ipcMain.handle('get-accounts', async () => {
-  return store.get('accounts') || [];
+  const accounts = store.get('accounts') || [];
+  return accounts.filter(account => account !== null);
 });
 
 ipcMain.handle('add-account', async (event, account) => {
   try {
     const newAccount = await leagueService.addAccount(account.summonerName, account.region);
+    if (!newAccount) {
+      throw new Error('Failed to add account: Invalid response from API');
+    }
+    
     const accounts = store.get('accounts') || [];
-    accounts.push(newAccount);
-    store.set('accounts', accounts);
-    return accounts;
+    const filteredAccounts = accounts.filter(account => account !== null);
+    filteredAccounts.push(newAccount);
+    store.set('accounts', filteredAccounts);
+    return filteredAccounts;
   } catch (error) {
     console.error('Error adding account:', error);
     throw error;
@@ -160,14 +167,15 @@ ipcMain.handle('add-account', async (event, account) => {
 
 ipcMain.handle('remove-account', async (event, accountId) => {
   const accounts = store.get('accounts') || [];
-  const updatedAccounts = accounts.filter(account => account.id !== accountId);
-  store.set('accounts', updatedAccounts);
-  return updatedAccounts;
+  const filteredAccounts = accounts.filter(account => account !== null && account.id !== accountId);
+  store.set('accounts', filteredAccounts);
+  return filteredAccounts;
 });
 
 ipcMain.handle('toggle-account', async (event, accountId) => {
   const accounts = store.get('accounts') || [];
-  const updatedAccounts = accounts.map(account =>
+  const filteredAccounts = accounts.filter(account => account !== null);
+  const updatedAccounts = filteredAccounts.map(account =>
     account.id === accountId ? { ...account, isActive: !account.isActive } : account
   );
   store.set('accounts', updatedAccounts);
@@ -182,6 +190,9 @@ ipcMain.handle('toggle-account', async (event, accountId) => {
 
 ipcMain.handle('check-account-game', async (event, account) => {
   try {
+    if (!account || !account.summonerName || !account.region) {
+      throw new Error('Invalid account data');
+    }
     return await leagueService.checkActiveGame(account.summonerName, account.region);
   } catch (error) {
     console.error('Error checking account game:', error);
@@ -192,7 +203,8 @@ ipcMain.handle('check-account-game', async (event, account) => {
 ipcMain.handle('start-monitoring', async () => {
   try {
     const accounts = store.get('accounts') || [];
-    const activeAccounts = accounts.filter(acc => acc.isActive);
+    const filteredAccounts = accounts.filter(account => account !== null);
+    const activeAccounts = filteredAccounts.filter(acc => acc.isActive);
 
     if (activeAccounts.length === 0) {
       throw new Error('No active accounts to monitor');

@@ -32,12 +32,14 @@ function Dashboard({ isMonitoring, toggleMonitoring, accounts }) {
 
   // Filter active accounts
   useEffect(() => {
-    setActiveAccounts(accounts.filter(account => account.isActive));
+    // Add null check before filtering
+    setActiveAccounts(accounts?.filter(account => account && account.isActive) || []);
   }, [accounts]);
 
   // Find currently streaming account
   useEffect(() => {
-    const streaming = accounts.find(account => account.inGame);
+    // Add null check before finding
+    const streaming = accounts?.find(account => account && account.inGame);
     setCurrentlyStreaming(streaming || null);
   }, [accounts]);
 

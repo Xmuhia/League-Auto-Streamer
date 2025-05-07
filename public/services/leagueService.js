@@ -1,5 +1,7 @@
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
+const fs = require('fs');
+const path = require('path');
 
 class LeagueService {
   constructor() {
@@ -13,10 +15,49 @@ class LeagueService {
     this.offlineRetryCount = 0;
     this.maxRetries = 3;
     this.retryDelay = 30000; // 30 seconds initial delay
+    
+    // New properties for enhanced game detection
+    this.logApiResponses = true;
+    this.logDir = path.join(__dirname, 'api_logs');
+    this.verificationDelay = 5000; // 5 second delay for secondary verification
+    this.gameVerificationCache = new Map(); // Cache to avoid duplicate verifications
+  }
+
+  // Create logs directory if logging is enabled
+  initLogging() {
+    if (this.logApiResponses && !fs.existsSync(this.logDir)) {
+      try {
+        fs.mkdirSync(this.logDir, { recursive: true });
+        console.log(`Created API logs directory: ${this.logDir}`);
+      } catch (error) {
+        console.error(`Failed to create logs directory: ${error.message}`);
+        this.logApiResponses = false;
+      }
+    }
+  }
+
+  // Log API responses to file for debugging
+  recordApiResponse(endpoint, response, isError = false) {
+    if (!this.logApiResponses) return;
+    
+    try {
+      const timestamp = new Date().toISOString().replace(/:/g, '-').replace(/\./g, '-');
+      const sanitizedEndpoint = endpoint.replace(/https:\/\/|http:\/\/|\//g, '_').replace(/[?&=]/g, '-');
+      const shortEndpoint = sanitizedEndpoint.length > 50 ? sanitizedEndpoint.substring(0, 50) : sanitizedEndpoint;
+      const filename = `${timestamp}_${shortEndpoint}_${isError ? 'error' : 'success'}.json`;
+      
+      fs.writeFileSync(
+        path.join(this.logDir, filename),
+        JSON.stringify(response, null, 2)
+      );
+    } catch (error) {
+      console.error(`Failed to record API response: ${error.message}`);
+    }
   }
 
   setApiKey(apiKey) {
     this.apiKey = apiKey;
+    this.initLogging(); // Initialize logging when API key is set
   }
 
   setPollingInterval(ms) {
@@ -35,6 +76,8 @@ class LeagueService {
   }
 
   getRoutingValueForRegion(region) {
+    if (!region) return 'americas'; // Default routing value
+    
     // Map regions to their routing values (americas, asia, europe)
     const regionMappings = {
       'NA1': 'americas',
@@ -69,6 +112,8 @@ class LeagueService {
   async getSummonerByName(summonerName, region) {
     try {
       if (!this.apiKey) throw new Error('Riot API key not set');
+      if (!summonerName) throw new Error('Summoner name is required');
+      if (!region) throw new Error('Region is required');
       
       // Check if online
       const online = await this.isOnline();
@@ -99,8 +144,14 @@ class LeagueService {
           headers: { 'X-Riot-Token': this.apiKey },
         });
         
+        // Log the API response
         const accountData = response.data;
+        this.recordApiResponse(url, accountData);
         console.log(`Account data received for ${gameName}#${tagLine}:`, accountData);
+        
+        if (!accountData || !accountData.puuid) {
+          throw new Error(`Invalid account data received for ${gameName}#${tagLine}`);
+        }
         
         // Direct mapping approach - try the provided region first
         const regionShardMap = {
@@ -127,6 +178,9 @@ class LeagueService {
               headers: { 'X-Riot-Token': this.apiKey },
             });
             
+            // Log the API response
+            this.recordApiResponse(summonerUrl, summonerResponse.data);
+            
             // If this succeeds, we've found the right shard
             return {
               ...summonerResponse.data,
@@ -136,6 +190,9 @@ class LeagueService {
           } catch (directError) {
             // If direct mapping fails, continue to the active shard API
             console.log(`Direct shard mapping failed, trying active shard API: ${directError.message}`);
+            if (directError.response) {
+              this.recordApiResponse(`${region}_direct_mapping`, directError.response.data, true);
+            }
           }
         }
         
@@ -148,13 +205,22 @@ class LeagueService {
             headers: { 'X-Riot-Token': this.apiKey },
           });
           
+          // Log the API response
+          this.recordApiResponse(shardUrl, shardResponse.data);
           console.log(`Active shard response: ${JSON.stringify(shardResponse.data)}`);
+          
+          if (!shardResponse.data || !shardResponse.data.activeShard) {
+            throw new Error(`Invalid active shard data received for ${gameName}#${tagLine}`);
+          }
           
           // Now get the actual summoner data using puuid
           const summonerUrl = `https://${shardResponse.data.activeShard}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${accountData.puuid}`;
           const summonerResponse = await axios.get(summonerUrl, {
             headers: { 'X-Riot-Token': this.apiKey },
           });
+          
+          // Log the API response
+          this.recordApiResponse(summonerUrl, summonerResponse.data);
           
           // Return the summoner data with additional account info
           return {
@@ -165,6 +231,7 @@ class LeagueService {
         } catch (shardError) {
           console.error(`Active shard lookup failed: ${shardError.message}`);
           if (shardError.response?.data) {
+            this.recordApiResponse('active_shard_error', shardError.response.data, true);
             console.error(`API Error details: ${JSON.stringify(shardError.response.data)}`);
           }
           
@@ -179,6 +246,8 @@ class LeagueService {
                 headers: { 'X-Riot-Token': this.apiKey },
               });
               
+              // Log the API response
+              this.recordApiResponse(summonerUrl, summonerResponse.data);
               console.log(`Found account in region ${testRegion}`);
               
               // Return the summoner data with additional account info
@@ -197,6 +266,9 @@ class LeagueService {
         }
       } catch (error) {
         if (error.response) {
+          // Log the error response
+          this.recordApiResponse('account_lookup_error', error.response.data, true);
+          
           // The request was made and the server responded with a status code
           // that falls out of the range of 2xx
           console.error(`API Error (${error.response.status}):`, 
@@ -232,6 +304,8 @@ class LeagueService {
   async checkActiveGame(summonerName, region) {
     try {
       if (!this.apiKey) throw new Error('Riot API key not set');
+      if (!summonerName) throw new Error('Summoner name is required');
+      if (!region) throw new Error('Region is required');
 
       // Check if online
       const online = await this.isOnline();
@@ -241,23 +315,153 @@ class LeagueService {
 
       const summonerData = await this.getSummonerByName(summonerName, region);
       if (!summonerData?.id) {
-        throw new Error(`Summoner ${summonerName} not found`);
+        throw new Error(`Summoner ${summonerName} not found or has no ID`);
       }
 
       try {
         // Use the specific region for the spectator endpoint
-        const url = `https://${region}.api.riotgames.com/lol/spectator/v4/active-games/by-summoner/${summonerData.id}`;
+        const url = `https://${region}.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/${summonerData.puuid}`;
+        console.log(`Checking active game at: ${url}`);
+        
         const response = await axios.get(url, {
           headers: { 'X-Riot-Token': this.apiKey },
         });
 
-        return response.data;
+        // Log the successful spectator API response
+        this.recordApiResponse(url, response.data);
+        console.log(`Active game found for ${summonerName}`);
+
+        // Simplify the return object to just include essential game status info
+        return {
+          inGame: true,
+          gameId: response.data.gameId,
+          gameType: response.data.gameType,
+          gameMode: response.data.gameMode,
+          mapId: response.data.mapId,
+          gameLengthSeconds: response.data.gameLength,
+          participants: response.data.participants.map(p => ({
+            summonerName: p.summonerName,
+            championId: p.championId,
+            teamId: p.teamId
+          }))
+        };
       } catch (error) {
         if (error.response && error.response.status === 404) {
-          return null; // Not in game
+          // Log the 404 response
+          this.recordApiResponse(`${region}_spectator_404`, error.response.data, true);
+          console.log(`No active game found for ${summonerName} - performing secondary verification`);
+          
+          // Implement secondary verification with match history check
+          // Generate a cache key to avoid duplicate verifications
+          const cacheKey = `${summonerData.puuid}_${Date.now()}`;
+          
+          // Check if we've recently verified this account
+          if (this.gameVerificationCache.has(summonerData.puuid)) {
+            const cachedResult = this.gameVerificationCache.get(summonerData.puuid);
+            if (Date.now() - cachedResult.timestamp < 60000) { // Cache for 1 minute
+              console.log(`Using cached verification result for ${summonerName}`);
+              return cachedResult.result;
+            }
+          }
+          
+          // After a 404 from spectator API, wait briefly and try secondary verification
+          try {
+            // Delay to account for potential API synchronization issues
+            await new Promise(resolve => setTimeout(resolve, this.verificationDelay));
+            
+            // Secondary verification: check recent matches
+            // Only do this verification if we have a puuid
+            if (summonerData.puuid) {
+              // Try to get the most recent match
+              const routingValue = this.getRoutingValueForRegion(region);
+              const recentMatchUrl = `https://${routingValue}.api.riotgames.com/lol/match/v5/matches/by-puuid/${summonerData.puuid}/ids?start=0&count=1`;
+              console.log(`Checking recent matches: ${recentMatchUrl}`);
+              
+              try {
+                const recentMatchResponse = await axios.get(recentMatchUrl, {
+                  headers: { 'X-Riot-Token': this.apiKey },
+                });
+                
+                this.recordApiResponse(recentMatchUrl, recentMatchResponse.data);
+                
+                if (recentMatchResponse.data && recentMatchResponse.data.length > 0) {
+                  const matchId = recentMatchResponse.data[0];
+                  const matchDetailsUrl = `https://${routingValue}.api.riotgames.com/lol/match/v5/matches/${matchId}`;
+                  console.log(`Checking match details: ${matchDetailsUrl}`);
+                  
+                  const matchDetails = await axios.get(matchDetailsUrl, {
+                    headers: { 'X-Riot-Token': this.apiKey },
+                  });
+                  
+                  this.recordApiResponse(matchDetailsUrl, matchDetails.data);
+                  
+                  // Check if the match is very recent (started less than 2 hours ago)
+                  // and is still ongoing (does not have an end time)
+                  const matchInfo = matchDetails.data.info;
+                  const matchStartTime = matchInfo.gameCreation;
+                  const currentTime = Date.now();
+                  const matchHasEnded = matchInfo.gameEndTimestamp != null;
+                  
+                  // If match started within last 2 hours and has no end timestamp
+                  if (currentTime - matchStartTime < 7200000 && !matchHasEnded) {
+                    console.log(`Recent match found that may be in progress: ${matchId}`);
+                    
+                    // Game might be in progress but not showing in spectator API
+                    const result = {
+                      inGame: true,
+                      gameId: matchId,
+                      gameType: matchInfo.gameType || 'MATCHED_GAME',
+                      gameMode: matchInfo.gameMode || 'CLASSIC',
+                      mapId: matchInfo.mapId || 11,
+                      gameLengthSeconds: Math.floor((currentTime - matchStartTime) / 1000),
+                      participants: matchInfo.participants.map(p => ({
+                        summonerName: p.summonerName,
+                        championId: p.championId,
+                        teamId: p.teamId
+                      })),
+                      verifiedByMatchHistory: true
+                    };
+                    
+                    // Cache this result
+                    this.gameVerificationCache.set(summonerData.puuid, {
+                      timestamp: Date.now(),
+                      result: result
+                    });
+                    
+                    return result;
+                  }
+                }
+              } catch (matchError) {
+                // Log match lookup error but continue with regular not-in-game response
+                console.error(`Error checking match history: ${matchError.message}`);
+                if (matchError.response?.data) {
+                  this.recordApiResponse('match_history_error', matchError.response.data, true);
+                }
+              }
+            }
+          } catch (verificationError) {
+            console.error(`Secondary verification failed: ${verificationError.message}`);
+          }
+          
+          // If we get here, both spectator API and secondary verification indicate not in game
+          const notInGameResult = {
+            inGame: false,
+            lastChecked: new Date().toISOString()
+          };
+          
+          // Cache this negative result
+          this.gameVerificationCache.set(summonerData.puuid, {
+            timestamp: Date.now(),
+            result: notInGameResult
+          });
+          
+          return notInGameResult;
         }
         
         if (error.response) {
+          // Log other error responses
+          this.recordApiResponse(`${region}_spectator_error`, error.response.data, true);
+          
           if (error.response.status === 401 || error.response.status === 403) {
             throw new Error(`API key invalid or expired. Please update your Riot API key.`);
           } else if (error.response.status === 429) {
@@ -279,6 +483,9 @@ class LeagueService {
 
   async addAccount(summonerName, region) {
     try {
+      if (!summonerName) throw new Error('Summoner name is required');
+      if (!region) throw new Error('Region is required');
+      
       // Check if online
       const online = await this.isOnline();
       if (!online) {
@@ -286,8 +493,12 @@ class LeagueService {
       }
       
       const summonerData = await this.getSummonerByName(summonerName, region);
+      if (!summonerData || !summonerData.puuid) {
+        throw new Error(`Invalid summoner data received for ${summonerName}`);
+      }
+      
       const accountExists = this.activeAccounts.some(
-        (acc) => acc.puuid === summonerData.puuid
+        (acc) => acc && acc.puuid === summonerData.puuid
       );
       if (accountExists) {
         console.warn(`Account ${summonerName} already being tracked`);
@@ -320,17 +531,64 @@ class LeagueService {
     if (!this.apiKey) throw new Error('Riot API key not set');
     if (this.isMonitoring) return true;
 
-    if (!accounts || accounts.length === 0) {
-      throw new Error('No active accounts to monitor');
+    if (!accounts || !Array.isArray(accounts) || accounts.length === 0) {
+      throw new Error('No accounts to monitor');
     }
+    
+    // Log incoming accounts for debugging
+    console.log('Accounts received for monitoring:', 
+      accounts.map(a => a ? 
+        `${a.summonerName || a.gameName || 'Unknown'} (Active: ${a.isActive}, Has PUUID: ${Boolean(a.puuid)})` 
+        : 'NULL ACCOUNT'
+      )
+    );
 
-    this.activeAccounts = [
-      ...new Map(accounts.filter(a => a.isActive).map(a => [a.puuid, a])).values(),
-    ];
+    // More lenient filtering - only require isActive and either summonerName or gameName
+    this.activeAccounts = accounts
+      .filter(a => {
+        if (!a) {
+          console.log('Filtering out null account');
+          return false;
+        }
+        
+        if (!a.isActive) {
+          console.log(`Account ${a.summonerName || a.gameName || 'Unknown'} is not active`);
+          return false;
+        }
+        
+        const hasName = Boolean(a.summonerName || a.gameName);
+        const hasRegion = Boolean(a.region);
+        
+        if (!hasName || !hasRegion) {
+          console.log(`Account missing required fields: ${JSON.stringify({
+            hasName,
+            hasRegion,
+            account: a.summonerName || a.gameName || 'Unknown' 
+          })}`);
+          return false;
+        }
+        
+        return true;
+      })
+      .reduce((unique, account) => {
+        // Deduplicate by id or puuid
+        const exists = unique.some(a => 
+          (a.id && a.id === account.id) || 
+          (a.puuid && a.puuid === account.puuid)
+        );
+        if (!exists) {
+          unique.push(account);
+        } else {
+          console.log(`Filtering out duplicate account: ${account.summonerName || account.gameName || 'Unknown'}`);
+        }
+        return unique;
+      }, []);
 
     if (this.activeAccounts.length === 0) {
-      throw new Error('No active accounts to monitor');
+      throw new Error('No valid active accounts to monitor');
     }
+
+    console.log(`Filtered down to ${this.activeAccounts.length} valid active accounts`);
 
     this.onGameDetected = onGameDetected || this.onGameDetected;
     this.onGameEnded = onGameEnded || this.onGameEnded;
@@ -370,30 +628,92 @@ class LeagueService {
     // Reset retry delay if we're online
     this.retryDelay = 30000;
 
+    // Clear expired entries from verification cache
+    for (const [puuid, cacheEntry] of this.gameVerificationCache.entries()) {
+      if (Date.now() - cacheEntry.timestamp > 60000) { // Expire after 1 minute
+        this.gameVerificationCache.delete(puuid);
+      }
+    }
+
     for (const account of this.activeAccounts) {
+      // Enhanced account validation with detailed logging
+      if (!account) {
+        console.log('Skipping null account in monitoring');
+        continue;
+      }
+      
+      // Log the account to diagnose the issue
+      console.log('Processing account:', JSON.stringify({
+        id: account.id,
+        summonerName: account.summonerName,
+        gameName: account.gameName,
+        tagLine: account.tagLine,
+        region: account.region,
+        puuid: account.puuid ? account.puuid.substring(0, 10) + '...' : null
+      }));
+      
+      // Use either summonerName or gameName
+      const accountName = account.summonerName || account.gameName;
+      const accountRegion = account.region;
+      
+      if (!accountName || !accountRegion) {
+        console.log(`Skipping account with missing name or region: ${JSON.stringify({
+          hasName: Boolean(accountName),
+          hasRegion: Boolean(accountRegion)
+        })}`);
+        continue;
+      }
+      
       try {
-        const gameData = await this.checkActiveGame(account.summonerName, account.region);
+        // Use proper name for checking
+        const nameToCheck = account.gameName && account.tagLine 
+          ? `${account.gameName}#${account.tagLine}` 
+          : accountName;
+          
+        console.log(`Checking game status for ${nameToCheck} in ${accountRegion}`);
+        
+        const gameStatus = await this.checkActiveGame(nameToCheck, accountRegion);
 
-        if (gameData && !account.inGame) {
-          account.inGame = true;
-          account.gameId = gameData.gameId;
-          console.log(`${account.summonerName} entered a game`);
-
-          this.onGameDetected?.(account, gameData);
-
-        } else if (!gameData && account.inGame) {
-          const endedGameId = account.gameId;
-          account.inGame = false;
-          account.gameId = null;
-          console.log(`${account.summonerName} exited a game`);
-
-          this.onGameEnded?.(account, endedGameId);
+        if (gameStatus.inGame) {
+          // Player is in game
+          console.log(`${nameToCheck} is currently IN GAME:`);
+          console.log(`  Game Mode: ${gameStatus.gameMode}`);
+          console.log(`  Game Length: ${Math.floor(gameStatus.gameLengthSeconds / 60)} minutes`);
+          if (gameStatus.participants) {
+            console.log(`  Champions: ${gameStatus.participants.map(p => p.summonerName).join(', ')}`);
+          }
+          if (gameStatus.verifiedByMatchHistory) {
+            console.log(`  Note: Game detected via match history verification`);
+          }
+          
+          if (!account.inGame) {
+            account.inGame = true;
+            account.gameId = gameStatus.gameId;
+            console.log(`${nameToCheck} has ENTERED a game`);
+            if (typeof this.onGameDetected === 'function') {
+              this.onGameDetected(account, gameStatus);
+            }
+          }
+        } else {
+          // Player is not in game
+          console.log(`${nameToCheck} is NOT IN GAME (last checked: ${gameStatus.lastChecked})`);
+          
+          if (account.inGame) {
+            console.log(`${nameToCheck} has EXITED a game`);
+            const endedGameId = account.gameId;
+            account.inGame = false;
+            account.gameId = null;
+            
+            if (typeof this.onGameEnded === 'function') {
+              this.onGameEnded(account, endedGameId);
+            }
+          }
         }
       } catch (error) {
         if (error.message === 'OFFLINE') {
-          console.log(`Cannot check ${account.summonerName} - network is offline`);
+          console.log(`Cannot check ${accountName} - network is offline`);
         } else {
-          console.error(`Failed to monitor ${account.summonerName}:`, error.message);
+          console.error(`Failed to monitor ${accountName}:`, error.message);
         }
       }
     }
@@ -411,15 +731,19 @@ class LeagueService {
 
   restartMonitoring() {
     this.stopMonitoring();
-    this.startMonitoring(this.activeAccounts, this.onGameDetected, this.onGameEnded);
+    return this.startMonitoring(this.activeAccounts, this.onGameDetected, this.onGameEnded);
   }
 
   getMonitoringStatus() {
     return {
       isMonitoring: this.isMonitoring,
-      accountCount: this.activeAccounts.length,
-      activeAccounts: this.activeAccounts.filter(a => a.isActive).length,
-      isOnline: this.offlineRetryCount < this.maxRetries
+      accountCount: Array.isArray(this.activeAccounts) ? this.activeAccounts.length : 0,
+      activeAccounts: Array.isArray(this.activeAccounts) 
+        ? this.activeAccounts.filter(a => a && a.isActive).length 
+        : 0,
+      isOnline: this.offlineRetryCount < this.maxRetries,
+      loggingEnabled: this.logApiResponses,
+      secondaryVerificationEnabled: true
     };
   }
 }

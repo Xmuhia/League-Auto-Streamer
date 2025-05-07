@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -50,6 +50,9 @@ const regions = [
 ];
 
 function AccountsPage({ accounts, setAccounts }) {
+  // Filter out any null accounts
+  const validAccounts = Array.isArray(accounts) ? accounts.filter(account => account !== null) : [];
+  
   const [newAccount, setNewAccount] = useState({
     summonerName: '',
     region: 'NA1'
@@ -61,6 +64,21 @@ function AccountsPage({ accounts, setAccounts }) {
   const [accountToDelete, setAccountToDelete] = useState(null);
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
   const [apiKey, setApiKey] = useState('');
+
+  // Helper functions for safe data access
+  const getDisplayName = (account) => {
+    if (!account) return 'Unknown Account';
+    if (account.gameName && account.tagLine) {
+      return `${account.gameName}#${account.tagLine}`;
+    }
+    return account.summonerName || 'Unknown';
+  };
+
+  const getRegionName = (account) => {
+    if (!account || !account.region) return 'Unknown';
+    const regionObj = regions.find(r => r.code === account.region);
+    return regionObj ? regionObj.name : account.region;
+  };
 
   // Handle input change for new account form
   const handleInputChange = (e) => {
@@ -87,8 +105,12 @@ function AccountsPage({ accounts, setAccounts }) {
       // Call the main process to add account
       const account = await window.api.addAccount(newAccount);
       
+      if (!account) {
+        throw new Error('Failed to add account: Invalid response from API');
+      }
+      
       // Update accounts state
-      setAccounts([...accounts, account]);
+      setAccounts([...validAccounts, account]);
       
       // Reset form
       setNewAccount({
@@ -96,10 +118,7 @@ function AccountsPage({ accounts, setAccounts }) {
         region: 'NA1'
       });
       
-      const displayName = account.gameName && account.tagLine 
-        ? `${account.gameName}#${account.tagLine}` 
-        : account.summonerName;
-        
+      const displayName = getDisplayName(account);
       setSuccess(`Account "${displayName}" added successfully`);
       
       // Clear success message after 5 seconds
@@ -117,7 +136,13 @@ function AccountsPage({ accounts, setAccounts }) {
   const handleToggleActive = async (accountId) => {
     try {
       const updatedAccounts = await window.api.toggleAccount(accountId);
-      setAccounts(updatedAccounts);
+      
+      // Ensure we filter out any null accounts
+      const validUpdatedAccounts = Array.isArray(updatedAccounts) 
+        ? updatedAccounts.filter(account => account !== null) 
+        : [];
+        
+      setAccounts(validUpdatedAccounts);
     } catch (error) {
       setError('Failed to update account status');
     }
@@ -125,6 +150,7 @@ function AccountsPage({ accounts, setAccounts }) {
 
   // Open delete confirmation dialog
   const openDeleteDialog = (account) => {
+    if (!account) return;
     setAccountToDelete(account);
     setDeleteDialogOpen(true);
   };
@@ -135,7 +161,13 @@ function AccountsPage({ accounts, setAccounts }) {
       if (!accountToDelete) return;
       
       const updatedAccounts = await window.api.removeAccount(accountToDelete.id);
-      setAccounts(updatedAccounts);
+      
+      // Filter out any null accounts in the response
+      const validUpdatedAccounts = Array.isArray(updatedAccounts) 
+        ? updatedAccounts.filter(account => account !== null) 
+        : [];
+        
+      setAccounts(validUpdatedAccounts);
       setDeleteDialogOpen(false);
       setAccountToDelete(null);
       
@@ -178,17 +210,17 @@ function AccountsPage({ accounts, setAccounts }) {
 
   // Check if a specific account is in game
   const handleCheckGameStatus = async (account) => {
+    if (!account) return;
+    
     try {
       setLoading(true);
       const gameData = await window.api.checkAccountGame({
-        summonerName: account.summonerName,
-        region: account.region
+        summonerName: account.summonerName || '',
+        region: account.region || 'NA1'
       });
       
-      const displayName = account.gameName && account.tagLine 
-        ? `${account.gameName}#${account.tagLine}` 
-        : account.summonerName;
-        
+      const displayName = getDisplayName(account);
+      
       if (gameData) {
         setSuccess(`${displayName} is currently in game!`);
       } else {
@@ -204,14 +236,6 @@ function AccountsPage({ accounts, setAccounts }) {
     } finally {
       setLoading(false);
     }
-  };
-
-  // Get display name for account
-  const getDisplayName = (account) => {
-    if (account.gameName && account.tagLine) {
-      return `${account.gameName}#${account.tagLine}`;
-    }
-    return account.summonerName;
   };
 
   return (
@@ -312,10 +336,10 @@ function AccountsPage({ accounts, setAccounts }) {
       <Card>
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            Tracked Accounts ({accounts.length})
+            Tracked Accounts ({validAccounts.length})
           </Typography>
           
-          {accounts.length === 0 ? (
+          {validAccounts.length === 0 ? (
             <Box sx={{ textAlign: 'center', py: 4 }}>
               <Typography variant="body1" color="text.secondary">
                 No accounts added yet. Add an account above to get started.
@@ -334,27 +358,27 @@ function AccountsPage({ accounts, setAccounts }) {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {accounts.map((account) => (
-                    <TableRow key={account.id}>
+                  {validAccounts.map((account) => (
+                    <TableRow key={account?.id || `temp-${Math.random()}`}>
                       <TableCell>
                         <Typography variant="body1">
                           {getDisplayName(account)}
                         </Typography>
                       </TableCell>
                       <TableCell>
-                        {regions.find(r => r.code === account.region)?.name || account.region}
+                        {getRegionName(account)}
                       </TableCell>
                       <TableCell align="center">
                         <Chip 
-                          label={account.inGame ? "In Game" : "Not Playing"} 
-                          color={account.inGame ? "success" : "default"}
+                          label={account?.inGame ? "In Game" : "Not Playing"} 
+                          color={account?.inGame ? "success" : "default"}
                           size="small"
                         />
                       </TableCell>
                       <TableCell align="center">
                         <Switch
-                          checked={account.isActive}
-                          onChange={() => handleToggleActive(account.id)}
+                          checked={Boolean(account?.isActive)}
+                          onChange={() => handleToggleActive(account?.id)}
                           color="primary"
                         />
                       </TableCell>
