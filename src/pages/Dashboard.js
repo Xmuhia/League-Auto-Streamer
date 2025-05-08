@@ -43,6 +43,63 @@ function Dashboard({ isMonitoring, toggleMonitoring, accounts }) {
     setCurrentlyStreaming(streaming || null);
   }, [accounts]);
 
+  // Get initial OBS status and listen for updates
+  useEffect(() => {
+    // Get initial OBS status
+    const getInitialObsStatus = async () => {
+      try {
+        const status = await window.api.getObsStatus();
+        setStreamStatus(prevStatus => ({
+          ...prevStatus,
+          connected: status.connected,
+          streaming: status.streaming
+        }));
+      } catch (error) {
+        console.error('Error getting OBS status:', error);
+      }
+    };
+    
+    // Listen for OBS status updates
+    const unsubscribe = window.api.on('obs-status-changed', (status) => {
+      console.log('OBS status changed:', status);
+      setStreamStatus(prevStatus => ({
+        ...prevStatus,
+        connected: status.connected,
+        streaming: status.streaming
+      }));
+    });
+    
+    // Listen for stream started events
+    const streamStartedUnsubscribe = window.api.on('stream-started', ({ account, gameData }) => {
+      console.log('Stream started for:', account.summonerName);
+      setStreamStatus(prevStatus => ({
+        ...prevStatus,
+        streaming: true
+      }));
+      setElapsedSeconds(0);
+    });
+    
+    // Listen for stream stopped events
+    const streamStoppedUnsubscribe = window.api.on('stream-stopped', ({ account }) => {
+      console.log('Stream stopped for:', account.summonerName);
+      setStreamStatus(prevStatus => ({
+        ...prevStatus,
+        streaming: false
+      }));
+      setElapsedSeconds(0);
+    });
+    
+    // Initialize
+    getInitialObsStatus();
+    
+    // Clean up
+    return () => {
+      if (unsubscribe) unsubscribe();
+      if (streamStartedUnsubscribe) streamStartedUnsubscribe();
+      if (streamStoppedUnsubscribe) streamStoppedUnsubscribe();
+    };
+  }, []);
+
   // Update stream duration if streaming
   useEffect(() => {
     let interval;

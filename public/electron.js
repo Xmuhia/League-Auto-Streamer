@@ -104,6 +104,11 @@ async function initializeApp() {
         if (streamSettings.autoStart) {
           if (!streamService.connected && settings.obs) {
             await streamService.connect(settings.obs.address, settings.obs.password);
+            
+            // Send OBS status update to UI
+            if (mainWindow) {
+              mainWindow.webContents.send('obs-status-changed', streamService.getStatus());
+            }
           }
 
           if (settings.twitch?.clientId && settings.twitch?.clientSecret) {
@@ -120,8 +125,10 @@ async function initializeApp() {
           await twitchService.updateStreamInfo(title, 'League of Legends');
           await streamService.startStream(gameData.gameId, account.summonerName);
 
+          // Send stream status update to UI
           if (mainWindow) {
             mainWindow.webContents.send('stream-started', { account, gameData });
+            mainWindow.webContents.send('obs-status-changed', streamService.getStatus());
           }
         }
       } catch (error) {
@@ -156,8 +163,10 @@ async function initializeApp() {
         if (!anyInGame && streamService.connected && streamService.streaming) {
           await streamService.stopStream();
 
+          // Send updated status to UI
           if (mainWindow) {
             mainWindow.webContents.send('stream-stopped', { account });
+            mainWindow.webContents.send('obs-status-changed', streamService.getStatus());
           }
         }
       } catch (error) {
@@ -286,7 +295,14 @@ ipcMain.handle('get-monitoring-status', async () => {
 
 ipcMain.handle('connect-obs', async (event, config) => {
   try {
-    return await streamService.connect(config.address, config.password);
+    const result = await streamService.connect(config.address, config.password);
+    
+    // Send OBS status update to UI
+    if (mainWindow) {
+      mainWindow.webContents.send('obs-status-changed', streamService.getStatus());
+    }
+    
+    return result;
   } catch (error) {
     console.error('Error connecting to OBS:', error);
     throw error;
@@ -339,4 +355,8 @@ ipcMain.handle('save-settings', async (event, settings) => {
 
 ipcMain.handle('initialize-app', async () => {
   return await initializeApp();
+});
+
+ipcMain.handle('get-obs-status', async () => {
+  return streamService.getStatus();
 });

@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   connectObs: (config) => ipcRenderer.invoke('connect-obs', config),
   connectTwitch: (config) => ipcRenderer.invoke('connect-twitch', config),
   updateStreamInfo: (info) => ipcRenderer.invoke('update-stream-info', info),
+  getObsStatus: () => ipcRenderer.invoke('get-obs-status'),
   
   // Settings
   getSettings: () => ipcRenderer.invoke('get-settings'),
@@ -28,7 +29,15 @@ contextBridge.exposeInMainWorld('api', {
   
   // Event system
   on: (channel, callback) => {
-    const validChannels = ['open-settings', 'open-about', 'account-updated', 'stream-started', 'stream-stopped'];
+    const validChannels = [
+      'open-settings', 
+      'open-about', 
+      'account-updated', 
+      'stream-started', 
+      'stream-stopped', 
+      'accounts-updated',
+      'obs-status-changed'
+    ];
     if (validChannels.includes(channel)) {
       const subscription = (_event, ...args) => callback(...args);
       ipcRenderer.on(channel, subscription);
