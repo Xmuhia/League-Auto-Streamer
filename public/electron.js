@@ -79,7 +79,7 @@ async function initializeApp() {
     }
 
     leagueService.setGameDetectedCallback(async (account, gameData) => {
-      console.log(`Game detected for ${account.summonerName}`);
+      console.log(`Game detected for ${account ? account.summonerName : 'undefined'}`);
 
       try {
         // Update the account's state in the stored accounts
@@ -100,9 +100,11 @@ async function initializeApp() {
         }
 
         const streamSettings = settings.streaming || {};
+        console.log('Auto-start streaming:', streamSettings.autoStart);
 
         if (streamSettings.autoStart) {
           if (!streamService.connected && settings.obs) {
+            console.log('Connecting to OBS...');
             await streamService.connect(settings.obs.address, settings.obs.password);
             
             // Send OBS status update to UI
@@ -111,18 +113,41 @@ async function initializeApp() {
             }
           }
 
+          // Connect to Twitch and check authentication status
+          let twitchConnected = false;
           if (settings.twitch?.clientId && settings.twitch?.clientSecret) {
-            await twitchService.connect(
+            console.log('Connecting to Twitch...');
+            twitchConnected = await twitchService.connect(
               settings.twitch.clientId,
               settings.twitch.clientSecret,
               settings.twitch.channelName
             );
+            console.log('Twitch connected:', twitchConnected);
+            
+            // Send Twitch status update to UI
+            if (mainWindow) {
+              mainWindow.webContents.send('twitch-status-changed', twitchService.getStatus());
+            }
           }
 
-          let title = streamSettings.titleTemplate || '{summonerName} playing League of Legends';
-          title = title.replace('{summonerName}', account.summonerName);
+          // Try to update Twitch stream info if we have valid auth
+          if (twitchConnected && twitchService.accessToken) {
+            try {
+              let title = streamSettings.titleTemplate || '{summonerName} playing League of Legends';
+              title = title.replace('{summonerName}', account.summonerName || 'League player');
+              
+              console.log(`Updating Twitch stream info: "${title}"`);
+              await twitchService.updateStreamInfo(title, 'League of Legends');
+            } catch (twitchError) {
+              console.error('Error updating Twitch stream info:', twitchError.message);
+              // Continue with OBS streaming even if Twitch update fails
+            }
+          } else {
+            console.log('Skipping Twitch update - not authenticated or connected');
+          }
 
-          await twitchService.updateStreamInfo(title, 'League of Legends');
+          // Start OBS streaming regardless of Twitch status
+          console.log('Starting OBS stream...');
           await streamService.startStream(gameData.gameId, account.summonerName);
 
           // Send stream status update to UI
@@ -359,4 +384,101 @@ ipcMain.handle('initialize-app', async () => {
 
 ipcMain.handle('get-obs-status', async () => {
   return streamService.getStatus();
+});
+
+// New IPC handlers for Twitch authentication
+ipcMain.handle('get-twitch-auth-status', () => {
+  return {
+    connected: Boolean(twitchService.accessToken && Date.now() < (twitchService.tokenExpiration || 0)),
+    channelName: twitchService.channelName
+  };
+});
+
+ipcMain.handle('start-twitch-auth', async () => {
+  try {
+    const settings = getSettings();
+    if (!settings.twitch?.clientId || !settings.twitch?.clientSecret) {
+      throw new Error('Twitch Client ID and Secret must be configured');
+    }
+    
+    // Initialize with stored settings
+    await twitchService.connect(
+      settings.twitch.clientId,
+      settings.twitch.clientSecret,
+      settings.twitch.channelName
+    );
+    
+    // Start auth flow
+    const success = await twitchService.startAuthFlow();
+    
+    // Notify the UI of the updated status
+    if (mainWindow) {
+      mainWindow.webContents.send('twitch-status-changed', {
+        connected: Boolean(twitchService.accessToken),
+        channelName: twitchService.channelName
+      });
+    }
+    
+    return success;
+  } catch (error) {
+    console.error('Error starting Twitch auth:', error);
+    throw error;
+  }
+});
+
+ipcMain.handle('disconnect-twitch', async () => {
+  twitchService.clearTokens();
+  
+  // Notify the UI of the updated status
+  if (mainWindow) {
+    mainWindow.webContents.send('twitch-status-changed', {
+      connected: false,
+      channelName: null
+    });
+  }
+  
+  return true;
+});
+
+ipcMain.handle('test-start-stream', async () => {
+  try {
+    console.log('Starting test stream...');
+    
+    // Connect to OBS if needed
+    if (!streamService.connected) {
+      const settings = getSettings();
+      console.log('Connecting to OBS...');
+      await streamService.connect(settings.obs.address, settings.obs.password);
+    }
+    
+    // Try to update Twitch info if authenticated
+    try {
+      if (twitchService.accessToken) {
+        console.log('Updating Twitch stream info...');
+        await twitchService.updateStreamInfo('Test Stream', 'League of Legends');
+      }
+    } catch (twitchError) {
+      console.error('Twitch update error during test:', twitchError);
+      // Continue with OBS anyway
+    }
+    
+    // Start the stream
+    console.log('Starting OBS stream...');
+    await streamService.startStream('test-123', 'Test Account');
+    
+    // Update UI
+    if (mainWindow) {
+      console.log('Sending stream-started event to UI');
+      mainWindow.webContents.send('stream-started', {
+        account: { summonerName: 'Test Account' },
+        gameData: { gameId: 'test-123' }
+      });
+      mainWindow.webContents.send('obs-status-changed', streamService.getStatus());
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Test stream error:', error);
+    throw error;
+  }
 });
