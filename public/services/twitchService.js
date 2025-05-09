@@ -1,13 +1,21 @@
 const axios = require('axios');
+const { BrowserWindow } = require('electron');
+const ElectronStore = require('electron-store').default;
+const store = new ElectronStore();
 
 class TwitchService {
   constructor() {
     this.clientId = '';
     this.clientSecret = '';
     this.channelName = '';
+    this.redirectUri = 'http://localhost:3000/auth/callback'; // Local callback
     this.accessToken = null;
+    this.refreshToken = null;
     this.tokenExpiration = 0;
     this.broadcasterId = null;
+    
+    // Load tokens from storage if available
+    this.loadTokensFromStorage();
   }
   
   /**
@@ -23,16 +31,45 @@ class TwitchService {
       this.clientSecret = clientSecret;
       this.channelName = channelName;
       
-      // Get access token
-      await this.getAccessToken();
-      
-      // Get broadcaster ID if we have a channel name
-      if (this.channelName) {
-        await this.getBroadcasterId();
+      // Check if we have valid tokens
+      if (this.accessToken && this.refreshToken && Date.now() < this.tokenExpiration) {
+        try {
+          // Validate token
+          await this.validateToken();
+          
+          // Get broadcaster ID if needed
+          if (this.channelName && !this.broadcasterId) {
+            await this.getBroadcasterId();
+          }
+          
+          console.log('Connected to Twitch API using stored token');
+          return true;
+        } catch (error) {
+          console.log('Stored token invalid, trying to refresh...');
+          
+          // Try to refresh the token
+          if (this.refreshToken) {
+            try {
+              await this.refreshAccessToken();
+              
+              if (this.channelName) {
+                await this.getBroadcasterId();
+              }
+              
+              console.log('Connected to Twitch API using refreshed token');
+              return true;
+            } catch (refreshError) {
+              console.log('Token refresh failed:', refreshError.message);
+              // Clear invalid tokens
+              this.clearTokens();
+            }
+          }
+        }
       }
       
-      console.log('Connected to Twitch API');
-      return true;
+      // At this point, we need user authorization
+      console.log('No valid tokens available, user authorization required');
+      return false;
     } catch (error) {
       console.error('Error connecting to Twitch:', error);
       throw new Error(`Failed to connect to Twitch: ${error.message}`);
@@ -40,39 +77,170 @@ class TwitchService {
   }
   
   /**
-   * Get a new OAuth access token
-   * @returns {Promise<string>} Access token
+   * Get authorization URL for user OAuth flow
+   * @returns {string} Authorization URL
    */
-  async getAccessToken() {
+  getAuthorizationUrl() {
+    const scopes = 'channel:manage:broadcast user:read:email';
+    return `https://id.twitch.tv/oauth2/authorize?client_id=${this.clientId}&redirect_uri=${encodeURIComponent(this.redirectUri)}&response_type=code&scope=${encodeURIComponent(scopes)}`;
+  }
+  
+  /**
+   * Start OAuth flow in a new window
+   * @returns {Promise<boolean>} Success
+   */
+  async startAuthFlow() {
+    return new Promise((resolve, reject) => {
+      try {
+        const authUrl = this.getAuthorizationUrl();
+        
+        // Create auth window
+        const authWindow = new BrowserWindow({
+          width: 800,
+          height: 600,
+          show: true,
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true
+          }
+        });
+        
+        // Listen for the redirect
+        authWindow.webContents.on('will-redirect', async (event, url) => {
+          const urlObj = new URL(url);
+          
+          // Check if this is our redirect URI
+          if (url.startsWith(this.redirectUri)) {
+            const code = urlObj.searchParams.get('code');
+            const error = urlObj.searchParams.get('error');
+            
+            if (code) {
+              authWindow.close();
+              
+              try {
+                await this.handleAuthCode(code);
+                resolve(true);
+              } catch (err) {
+                reject(err);
+              }
+            } else if (error) {
+              authWindow.close();
+              reject(new Error(`Authentication error: ${error}`));
+            }
+          }
+        });
+        
+        // Handle auth window closed
+        authWindow.on('closed', () => {
+          reject(new Error('Authentication window was closed before completing authorization'));
+        });
+        
+        // Load the auth URL
+        authWindow.loadURL(authUrl);
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+  
+  /**
+   * Exchange authorization code for access token
+   * @param {string} code - Authorization code from OAuth redirect
+   * @returns {Promise<boolean>} Success
+   */
+  async handleAuthCode(code) {
     try {
-      // Check if we have a valid token
-      if (this.accessToken && Date.now() < this.tokenExpiration) {
-        return this.accessToken;
-      }
-      
-      if (!this.clientId || !this.clientSecret) {
-        throw new Error('Client ID and Client Secret are required');
-      }
-      
-      // Get new token
-      const response = await axios.post(
-        'https://id.twitch.tv/oauth2/token',
-        new URLSearchParams({
+      const response = await axios.post('https://id.twitch.tv/oauth2/token', null, {
+        params: {
           client_id: this.clientId,
           client_secret: this.clientSecret,
-          grant_type: 'client_credentials'
-        })
-      );
+          code,
+          grant_type: 'authorization_code',
+          redirect_uri: this.redirectUri
+        }
+      });
       
-      // Store token and expiration (subtract 5 minutes for safety)
       this.accessToken = response.data.access_token;
+      this.refreshToken = response.data.refresh_token;
+      this.tokenExpiration = Date.now() + (response.data.expires_in * 1000) - 300000; // 5 min buffer
+      
+      // Save tokens to storage
+      this.saveTokensToStorage();
+      
+      // Get broadcaster ID
+      if (this.channelName) {
+        await this.getBroadcasterId();
+      }
+      
+      console.log('Successfully authorized with Twitch');
+      return true;
+    } catch (error) {
+      console.error('Error handling authorization code:', error);
+      throw new Error(`Failed to authorize with Twitch: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Refresh access token using refresh token
+   * @returns {Promise<string>} New access token
+   */
+  async refreshAccessToken() {
+    try {
+      if (!this.refreshToken) {
+        throw new Error('No refresh token available');
+      }
+      
+      const response = await axios.post('https://id.twitch.tv/oauth2/token', null, {
+        params: {
+          client_id: this.clientId,
+          client_secret: this.clientSecret,
+          refresh_token: this.refreshToken,
+          grant_type: 'refresh_token'
+        }
+      });
+      
+      this.accessToken = response.data.access_token;
+      
+      // Some implementations return a new refresh token, some don't
+      if (response.data.refresh_token) {
+        this.refreshToken = response.data.refresh_token;
+      }
+      
       this.tokenExpiration = Date.now() + (response.data.expires_in * 1000) - 300000;
       
-      console.log('New Twitch access token obtained');
+      // Save updated tokens
+      this.saveTokensToStorage();
+      
+      console.log('Successfully refreshed Twitch access token');
       return this.accessToken;
     } catch (error) {
-      console.error('Error getting Twitch access token:', error);
-      throw new Error('Failed to authenticate with Twitch API');
+      console.error('Error refreshing access token:', error);
+      throw new Error('Failed to refresh access token');
+    }
+  }
+  
+  /**
+   * Validate the current access token
+   * @returns {Promise<boolean>} Is token valid
+   */
+  async validateToken() {
+    try {
+      const response = await axios.get('https://id.twitch.tv/oauth2/validate', {
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`
+        }
+      });
+      
+      // Check if the token has the required scopes
+      const scopes = response.data.scopes || [];
+      if (!scopes.includes('channel:manage:broadcast')) {
+        throw new Error('Token missing required scopes');
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Token validation failed:', error);
+      throw error;
     }
   }
   
@@ -86,13 +254,15 @@ class TwitchService {
         throw new Error('Channel name is required');
       }
       
-      const token = await this.getAccessToken();
+      if (!this.accessToken) {
+        throw new Error('Access token required');
+      }
       
       const response = await axios.get(
         `https://api.twitch.tv/helix/users?login=${this.channelName}`,
         {
           headers: {
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${this.accessToken}`,
             'Client-Id': this.clientId
           }
         }
@@ -118,12 +288,15 @@ class TwitchService {
    */
   async updateStreamInfo(title, gameName) {
     try {
-      // Make sure we have required info
+      // Ensure we have a valid token
+      if (!this.accessToken) {
+        throw new Error('Not authenticated with Twitch');
+      }
+      
+      // Make sure we have broadcaster ID
       if (!this.broadcasterId) {
         await this.getBroadcasterId();
       }
-      
-      const token = await this.getAccessToken();
       
       // Get game ID
       let gameId = await this.getGameId(gameName);
@@ -137,7 +310,7 @@ class TwitchService {
         },
         {
           headers: {
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${this.accessToken}`,
             'Client-Id': this.clientId,
             'Content-Type': 'application/json'
           }
@@ -159,13 +332,11 @@ class TwitchService {
    */
   async getGameId(gameName) {
     try {
-      const token = await this.getAccessToken();
-      
       const response = await axios.get(
         `https://api.twitch.tv/helix/games?name=${encodeURIComponent(gameName)}`,
         {
           headers: {
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${this.accessToken}`,
             'Client-Id': this.clientId
           }
         }
@@ -187,65 +358,65 @@ class TwitchService {
   }
   
   /**
-   * Check if the channel is currently live
-   * @returns {Promise<boolean>} Live status
+   * Save tokens to storage
    */
-  async isChannelLive() {
+  saveTokensToStorage() {
     try {
-      if (!this.broadcasterId) {
-        await this.getBroadcasterId();
-      }
-      
-      const token = await this.getAccessToken();
-      
-      const response = await axios.get(
-        `https://api.twitch.tv/helix/streams?user_id=${this.broadcasterId}`,
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Client-Id': this.clientId
-          }
-        }
-      );
-      
-      return response.data.data.length > 0;
+      store.set('twitch.tokens', {
+        accessToken: this.accessToken,
+        refreshToken: this.refreshToken,
+        tokenExpiration: this.tokenExpiration,
+        broadcasterId: this.broadcasterId
+      });
     } catch (error) {
-      console.error('Error checking if channel is live:', error);
-      return false;
+      console.error('Error saving tokens to storage:', error);
     }
   }
   
   /**
-   * Get stream information
-   * @returns {Promise<Object|null>} Stream data or null if offline
+   * Load tokens from storage
    */
-  async getStreamInfo() {
+  loadTokensFromStorage() {
     try {
-      if (!this.broadcasterId) {
-        await this.getBroadcasterId();
+      const tokens = store.get('twitch.tokens');
+      if (tokens) {
+        this.accessToken = tokens.accessToken;
+        this.refreshToken = tokens.refreshToken;
+        this.tokenExpiration = tokens.tokenExpiration;
+        this.broadcasterId = tokens.broadcasterId;
       }
-      
-      const token = await this.getAccessToken();
-      
-      const response = await axios.get(
-        `https://api.twitch.tv/helix/streams?user_id=${this.broadcasterId}`,
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Client-Id': this.clientId
-          }
-        }
-      );
-      
-      if (response.data.data.length > 0) {
-        return response.data.data[0];
-      }
-      
-      return null;
     } catch (error) {
-      console.error('Error getting stream info:', error);
-      return null;
+      console.error('Error loading tokens from storage:', error);
     }
+  }
+  
+  /**
+   * Clear stored tokens
+   */
+  clearTokens() {
+    this.accessToken = null;
+    this.refreshToken = null;
+    this.tokenExpiration = 0;
+    this.broadcasterId = null;
+    
+    try {
+      store.delete('twitch.tokens');
+    } catch (error) {
+      console.error('Error clearing tokens from storage:', error);
+    }
+  }
+  
+  /**
+   * Get Twitch connection status
+   * @returns {Object} Status
+   */
+  getStatus() {
+    return {
+      connected: Boolean(this.accessToken && this.tokenExpiration > Date.now()),
+      channelName: this.channelName,
+      hasValidToken: Boolean(this.accessToken && this.tokenExpiration > Date.now()),
+      needsAuthorization: !this.accessToken || this.tokenExpiration <= Date.now()
+    };
   }
 }
 
