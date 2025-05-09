@@ -20,6 +20,14 @@ contextBridge.exposeInMainWorld('api', {
   updateStreamInfo: (info) => ipcRenderer.invoke('update-stream-info', info),
   getObsStatus: () => ipcRenderer.invoke('get-obs-status'),
   
+  // Twitch authentication
+  getTwitchAuthStatus: () => ipcRenderer.invoke('get-twitch-auth-status'),
+  startTwitchAuth: () => ipcRenderer.invoke('start-twitch-auth'),
+  disconnectTwitch: () => ipcRenderer.invoke('disconnect-twitch'),
+  
+  // Test functions
+  testStartStream: () => ipcRenderer.invoke('test-start-stream'),
+  
   // Settings
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
@@ -36,7 +44,8 @@ contextBridge.exposeInMainWorld('api', {
       'stream-started', 
       'stream-stopped', 
       'accounts-updated',
-      'obs-status-changed'
+      'obs-status-changed',
+      'twitch-status-changed'  // Added new event channel
     ];
     if (validChannels.includes(channel)) {
       const subscription = (_event, ...args) => callback(...args);
