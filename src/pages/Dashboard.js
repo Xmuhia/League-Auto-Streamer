@@ -7,8 +7,6 @@ import {
   CardContent,
   Grid,
   Switch,
-  FormControlLabel,
-  CircularProgress,
   Divider,
   Chip,
   Avatar
@@ -19,6 +17,7 @@ import AccountCircleIcon from '@mui/icons-material/AccountCircle';
 import VideogameAssetIcon from '@mui/icons-material/VideogameAsset';
 import LiveTvIcon from '@mui/icons-material/LiveTv';
 import ScheduleIcon from '@mui/icons-material/Schedule';
+import TwitchAuthCard from './TwitchAuthCard'; // Import the TwitchAuthCard component
 
 function Dashboard({ isMonitoring, toggleMonitoring, accounts }) {
   const [activeAccounts, setActiveAccounts] = useState([]);
@@ -127,6 +126,16 @@ function Dashboard({ isMonitoring, toggleMonitoring, accounts }) {
     await toggleMonitoring();
   };
 
+  // Handle test stream (for debugging)
+  const handleTestStream = async () => {
+    try {
+      console.log('Testing stream start...');
+      await window.api.testStartStream();
+    } catch (error) {
+      console.error('Test stream failed:', error);
+    }
+  };
+
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
@@ -134,15 +143,29 @@ function Dashboard({ isMonitoring, toggleMonitoring, accounts }) {
           Dashboard
         </Typography>
         
-        <Button
-          variant="contained"
-          color={isMonitoring ? "error" : "primary"}
-          startIcon={isMonitoring ? <StopIcon /> : <PlayArrowIcon />}
-          onClick={handleMonitoringToggle}
-          sx={{ borderRadius: 2 }}
-        >
-          {isMonitoring ? "Stop Monitoring" : "Start Monitoring"}
-        </Button>
+        <Box>
+          <Button
+            variant="contained"
+            color={isMonitoring ? "error" : "primary"}
+            startIcon={isMonitoring ? <StopIcon /> : <PlayArrowIcon />}
+            onClick={handleMonitoringToggle}
+            sx={{ borderRadius: 2 }}
+          >
+            {isMonitoring ? "Stop Monitoring" : "Start Monitoring"}
+          </Button>
+          
+          {/* Test Stream button (only visible in development) */}
+          {process.env.NODE_ENV === 'development' && (
+            <Button
+              variant="outlined"
+              color="secondary"
+              onClick={handleTestStream}
+              sx={{ ml: 2, borderRadius: 2 }}
+            >
+              Test Stream
+            </Button>
+          )}
+        </Box>
       </Box>
 
       <Grid container spacing={3}>
@@ -291,7 +314,56 @@ function Dashboard({ isMonitoring, toggleMonitoring, accounts }) {
           </Card>
         </Grid>
 
-        {/* Recently monitored accounts */}
+        {/* Streaming Setup Row */}
+        <Grid item xs={12}>
+          <Typography variant="h6" gutterBottom>
+            Streaming Setup
+          </Typography>
+          <Grid container spacing={3}>
+            {/* Twitch Auth Card */}
+            <Grid item xs={12} md={6}>
+              <TwitchAuthCard />
+            </Grid>
+            
+            {/* OBS Connection Card */}
+            <Grid item xs={12} md={6}>
+              <Card sx={{ height: '100%' }}>
+                <CardContent>
+                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                    <LiveTvIcon color="primary" sx={{ mr: 1 }} />
+                    <Typography variant="h6" component="div">
+                      OBS Connection
+                    </Typography>
+                  </Box>
+                  
+                  <Box sx={{ textAlign: 'center', my: 2 }}>
+                    <Chip 
+                      label={streamStatus.connected ? "CONNECTED" : "DISCONNECTED"} 
+                      color={streamStatus.connected ? "success" : "error"}
+                      sx={{ mb: 1 }} 
+                    />
+                    <Typography variant="body2" color="text.secondary">
+                      {streamStatus.connected 
+                        ? (streamStatus.streaming ? "Currently streaming" : "Connected but not streaming") 
+                        : "Not connected to OBS"}
+                    </Typography>
+                  </Box>
+                  
+                  {streamStatus.streaming && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <ScheduleIcon fontSize="small" sx={{ mr: 1, color: 'text.secondary' }} />
+                      <Typography variant="body2" color="text.secondary">
+                        Uptime: {formatElapsedTime(elapsedSeconds)}
+                      </Typography>
+                    </Box>
+                  )}
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+        </Grid>
+
+        {/* Monitored accounts */}
         <Grid item xs={12}>
           <Card>
             <CardContent>
