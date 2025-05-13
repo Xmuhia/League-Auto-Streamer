@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, Menu } = require('electron');
 const path = require('path');
 const isDev = require('electron-is-dev');
 const ElectronStore = require('electron-store').default; 
+const axios = require('axios'); // Make sure this is imported for featured games API call
 
 // Import services
 const leagueService = require('./services/leagueService');
@@ -464,32 +465,108 @@ ipcMain.handle('test-start-stream', async () => {
       await streamService.connect(settings.obs.address, settings.obs.password);
     }
     
+    // Find a real game to stream - first check monitored accounts
+    console.log('Looking for an active game to stream...');
+    const accounts = store.get('accounts') || [];
+    const activeAccounts = accounts.filter(acc => acc && acc.isActive);
+    
+    let accountWithGame = null;
+    let gameData = null;
+    
+    // Check if any monitored accounts are in game
+    for (const account of activeAccounts) {
+      try {
+        if (account && account.summonerName && account.region) {
+          console.log(`Checking if ${account.summonerName} is in game...`);
+          const checkResult = await leagueService.checkActiveGame(account.summonerName, account.region);
+          
+          if (checkResult && checkResult.inGame) {
+            console.log(`Found active game for ${account.summonerName}`);
+            accountWithGame = account;
+            gameData = checkResult;
+            break;
+          }
+        }
+      } catch (error) {
+        console.log(`Error checking game for ${account.summonerName}:`, error.message);
+      }
+    }
+    
+    // If no monitored accounts are in game, use a featured game
+    if (!accountWithGame) {
+      console.log('No monitored accounts in game, trying to get a featured game...');
+      
+      try {
+        // Get the featured games for a reliable region (NA1)
+        const region = 'NA1';
+        const url = `https://${region}.api.riotgames.com/lol/spectator/v4/featured-games`;
+        
+        const response = await axios.get(url, {
+          headers: {
+            'X-Riot-Token': leagueService.apiKey
+          }
+        });
+        
+        if (response.data && response.data.gameList && response.data.gameList.length > 0) {
+          const featuredGame = response.data.gameList[0];
+          const participant = featuredGame.participants[0]; // Get first player
+          
+          console.log(`Found featured game with ${participant.summonerName}`);
+          
+          // Create a temporary account object for the featured player
+          accountWithGame = {
+            summonerName: participant.summonerName,
+            summonerId: participant.summonerId,
+            region: region
+          };
+          
+          // Format game data to match what our service expects
+          gameData = {
+            inGame: true,
+            gameId: featuredGame.gameId,
+            gameMode: featuredGame.gameMode,
+            mapId: featuredGame.mapId,
+            observers: featuredGame.observers,
+            participants: featuredGame.participants
+          };
+        }
+      } catch (error) {
+        console.error('Error getting featured game:', error.message);
+      }
+    }
+    
+    // If we still don't have a game, throw an error
+    if (!accountWithGame || !gameData) {
+      throw new Error('No active games found to test stream. Please ensure at least one monitored account is in a game, or try again later.');
+    }
+    
     // Try to update Twitch info if authenticated
     try {
       if (twitchService.accessToken) {
-        console.log('Updating Twitch stream info...');
-        await twitchService.updateStreamInfo('Test Stream', 'League of Legends');
+        const title = `Test Stream: ${accountWithGame.summonerName} playing League of Legends`;
+        console.log('Updating Twitch stream info:', title);
+        await twitchService.updateStreamInfo(title, 'League of Legends');
       }
     } catch (twitchError) {
       console.error('Twitch update error during test:', twitchError);
       // Continue with OBS anyway
     }
     
-    // Start the stream - pass dummy summoner ID and region for test
-    console.log('Starting OBS stream...');
+    // Start the stream with the real game data
+    console.log(`Starting OBS stream for test using ${accountWithGame.summonerName}'s game...`);
     await streamService.startStream(
-      'test-123', 
-      'Test Account',
-      'test-summoner-id',
-      'NA1'
+      gameData.gameId, 
+      accountWithGame.summonerName,
+      accountWithGame.summonerId,
+      accountWithGame.region
     );
     
     // Update UI
     if (mainWindow) {
       console.log('Sending stream-started event to UI');
       mainWindow.webContents.send('stream-started', {
-        account: { summonerName: 'Test Account' },
-        gameData: { gameId: 'test-123' }
+        account: accountWithGame,
+        gameData: gameData
       });
       mainWindow.webContents.send('obs-status-changed', streamService.getStatus());
     }
