@@ -1,4 +1,5 @@
 const OBSWebSocket = require('obs-websocket-js').default;
+const { exec } = require('child_process');
 
 class StreamService {
   constructor() {
@@ -118,7 +119,7 @@ class StreamService {
     }
   }
   
-  async startStream(gameId, accountName) {
+  async startStream(gameId, accountName, summonerId, region) {
     try {
       if (!this.connected || !this.obs) {
         throw new Error('Not connected to OBS');
@@ -133,6 +134,13 @@ class StreamService {
         this.currentGame = gameId;
         return true;
       }
+      
+      // Launch League spectator mode for the current game
+      await this.launchLeagueSpectator(gameId, summonerId, region);
+      
+      // Wait for spectator client to launch
+      console.log('Waiting for spectator client to launch...');
+      await new Promise(resolve => setTimeout(resolve, 5000));
       
       // Set up scene with game capture
       await this.setUpLeagueScene();
@@ -244,6 +252,49 @@ class StreamService {
         capture_mode: 'window'
       }
     });
+  }
+  
+  async launchLeagueSpectator(gameId, summonerId, region) {
+    try {
+      console.log(`Launching spectator for game ${gameId} in region ${region}`);
+      
+      // Get platform ID for the region
+      const platformId = this.getPlatformId(region);
+      
+      if (!platformId) {
+        throw new Error(`Unsupported region: ${region}`);
+      }
+      
+      // Create spectator URL
+      const spectatorUrl = `riot:spectator:${platformId}:${gameId}:${summonerId}:1`;
+      
+      // Launch URL using child_process
+      exec(`start "" "${spectatorUrl}"`);
+      
+      console.log(`Spectator URL launched: ${spectatorUrl}`);
+      return true;
+    } catch (error) {
+      console.error('Error launching spectator:', error);
+      throw error;
+    }
+  }
+  
+  getPlatformId(region) {
+    const platformMap = {
+      'NA1': 'NA1',
+      'EUW1': 'EUW1',
+      'EUN1': 'EUN1',
+      'KR': 'KR',
+      'BR1': 'BR1',
+      'JP1': 'JP1',
+      'LA1': 'LA1',
+      'LA2': 'LA2',
+      'OC1': 'OC1',
+      'TR1': 'TR1',
+      'RU': 'RU'
+    };
+    
+    return platformMap[region] || null;
   }
   
   getStatus() {
