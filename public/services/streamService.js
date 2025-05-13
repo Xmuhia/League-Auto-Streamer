@@ -1,5 +1,6 @@
 const OBSWebSocket = require('obs-websocket-js').default;
 const { exec } = require('child_process');
+const leagueService = require('./leagueService');
 
 class StreamService {
   constructor() {
@@ -135,8 +136,15 @@ class StreamService {
         return true;
       }
       
+      // Get game data to obtain encryption key
+      const gameData = await this.getGameInfo(summonerId, region);
+      
+      if (!gameData) {
+        throw new Error(`No active game data found for ${accountName}`);
+      }
+      
       // Launch League spectator mode for the current game
-      await this.launchLeagueSpectator(gameId, summonerId, region);
+      await this.launchLeagueSpectator(gameData, region);
       
       // Wait for spectator client to launch
       console.log('Waiting for spectator client to launch...');
@@ -254,22 +262,53 @@ class StreamService {
     });
   }
   
-  async launchLeagueSpectator(gameId, summonerId, region) {
+  async getGameInfo(summonerId, region) {
     try {
-      console.log(`Launching spectator for game ${gameId} in region ${region}`);
+      // Get game data using leagueService
+      console.log(`Getting game data for ${summonerId} in ${region}`);
+      const gameData = await leagueService.checkActiveGame(summonerId, region);
       
-      // Get platform ID for the region
-      const platformId = this.getPlatformId(region);
+      if (!gameData) {
+        console.log(`No active game found for summoner ${summonerId}`);
+        return null;
+      }
+      
+      console.log(`Game data retrieved. Game ID: ${gameData.gameId}, Platform: ${gameData.platformId}`);
+      return gameData;
+    } catch (error) {
+      console.error(`Error getting game info: ${error.message}`);
+      return null;
+    }
+  }
+  
+  async launchLeagueSpectator(gameData, region) {
+    try {
+      console.log(`Launching spectator for game ${gameData.gameId} in region ${region}`);
+      
+      // Extract needed information from game data
+      const platformId = gameData.platformId || this.getPlatformId(region);
+      const gameId = gameData.gameId;
+      const encryptionKey = gameData.observers?.encryptionKey;
       
       if (!platformId) {
         throw new Error(`Unsupported region: ${region}`);
       }
       
-      // Create spectator URL
-      const spectatorUrl = `riot:spectator:${platformId}:${gameId}:${summonerId}:1`;
+      if (!encryptionKey) {
+        throw new Error('Missing encryption key in game data');
+      }
       
-      // Launch URL using child_process
-      exec(`start "" "${spectatorUrl}"`);
+      // Create spectator URL with the correct format
+      const spectatorUrl = `riot:spectator:${platformId}:${gameId}:${encryptionKey}`;
+      
+      // Launch URL using child_process with platform-specific command
+      if (process.platform === 'win32') {
+        exec(`start "" "${spectatorUrl}"`);
+      } else if (process.platform === 'darwin') { // macOS
+        exec(`open "${spectatorUrl}"`);
+      } else { // Linux
+        exec(`xdg-open "${spectatorUrl}"`);
+      }
       
       console.log(`Spectator URL launched: ${spectatorUrl}`);
       return true;
