@@ -146,9 +146,14 @@ async function initializeApp() {
             console.log('Skipping Twitch update - not authenticated or connected');
           }
 
-          // Start OBS streaming regardless of Twitch status
+          // Start OBS streaming with additional parameters for spectator mode
           console.log('Starting OBS stream...');
-          await streamService.startStream(gameData.gameId, account.summonerName);
+          await streamService.startStream(
+            gameData.gameId, 
+            account.summonerName,
+            account.summonerId,
+            account.region
+          );
 
           // Send stream status update to UI
           if (mainWindow) {
@@ -260,7 +265,13 @@ ipcMain.handle('check-account-game', async (event, account) => {
       throw new Error('Invalid account data');
     }
     
-    const gameData = await leagueService.checkActiveGame(account.summonerName, account.region);
+    // Construct proper Riot ID
+    const riotId = account.gameName && account.tagLine 
+      ? `${account.gameName}#${account.tagLine}`
+      : account.summonerName;
+      
+    console.log(`Checking game for: ${riotId} in region ${account.region}`);
+    const gameData = await leagueService.checkActiveGame(riotId, account.region);
     
     // Update the account's game status in the store
     if (gameData) {
@@ -291,6 +302,8 @@ ipcMain.handle('check-account-game', async (event, account) => {
 ipcMain.handle('start-monitoring', async () => {
   try {
     const accounts = store.get('accounts') || [];
+    console.log('Accounts loaded from storage:', JSON.stringify(accounts, null, 2));
+    
     const filteredAccounts = accounts.filter(account => account !== null);
     const activeAccounts = filteredAccounts.filter(acc => acc.isActive);
 
@@ -462,9 +475,14 @@ ipcMain.handle('test-start-stream', async () => {
       // Continue with OBS anyway
     }
     
-    // Start the stream
+    // Start the stream - pass dummy summoner ID and region for test
     console.log('Starting OBS stream...');
-    await streamService.startStream('test-123', 'Test Account');
+    await streamService.startStream(
+      'test-123', 
+      'Test Account',
+      'test-summoner-id',
+      'NA1'
+    );
     
     // Update UI
     if (mainWindow) {
