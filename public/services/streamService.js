@@ -136,22 +136,64 @@ class StreamService {
         return true;
       }
       
-      // Get game data to obtain encryption key
-      const gameData = await this.getGameInfo(summonerId, region);
+      // Get game data to obtain encryption key with retries
+      let gameData = null;
+      let attempts = 0;
+      const maxAttempts = 3;
+      
+      while (!gameData && attempts < maxAttempts) {
+        attempts++;
+        try {
+          console.log(`Attempt ${attempts}/${maxAttempts} to get game data for ${summonerId}`);
+          gameData = await this.getGameInfo(summonerId, region);
+          
+          if (gameData) {
+            console.log('Game data retrieved successfully');
+            break;
+          } else {
+            console.log(`No game data found (attempt ${attempts}/${maxAttempts})`);
+            if (attempts < maxAttempts) {
+              // Wait before next attempt
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+          }
+        } catch (error) {
+          console.error(`Error getting game data (attempt ${attempts}/${maxAttempts}):`, error.message);
+          if (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+      }
       
       if (!gameData) {
-        throw new Error(`No active game data found for ${accountName}`);
+        throw new Error(`No active game data found for ${accountName} after ${maxAttempts} attempts`);
       }
       
       // Launch League spectator mode for the current game
       await this.launchLeagueSpectator(gameData, region);
       
       // Wait for spectator client to launch
-      console.log('Waiting for spectator client to launch...');
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      await this.waitForSpectatorLaunch(10000);
       
-      // Set up scene with game capture
-      await this.setUpLeagueScene();
+      // Set up scene with game capture - with retries
+      let sceneSetupSuccess = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          console.log(`Attempt ${attempt}/3 to set up League scene`);
+          await this.setUpLeagueScene();
+          sceneSetupSuccess = true;
+          break;
+        } catch (error) {
+          console.error(`Scene setup attempt ${attempt} failed:`, error);
+          if (attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+      }
+      
+      if (!sceneSetupSuccess) {
+        console.warn('Failed to set up scene properly. Continuing anyway, but stream may not show game.');
+      }
       
       // Start the stream
       await this.obs.call('StartStream');
@@ -288,7 +330,19 @@ class StreamService {
       // Extract needed information from game data
       const platformId = gameData.platformId || this.getPlatformId(region);
       const gameId = gameData.gameId;
-      const encryptionKey = gameData.observers?.encryptionKey;
+      
+      // Handle case when observers might be in a different format or null
+      let encryptionKey = null;
+      if (gameData.observers) {
+        // Standard format
+        if (gameData.observers.encryptionKey) {
+          encryptionKey = gameData.observers.encryptionKey;
+        } 
+        // Featured game format
+        else if (typeof gameData.observers === 'string') {
+          encryptionKey = gameData.observers;
+        }
+      }
       
       if (!platformId) {
         throw new Error(`Unsupported region: ${region}`);
@@ -302,20 +356,69 @@ class StreamService {
       const spectatorUrl = `riot:spectator:${platformId}:${gameId}:${encryptionKey}`;
       
       // Launch URL using child_process with platform-specific command
-      if (process.platform === 'win32') {
-        exec(`start "" "${spectatorUrl}"`);
-      } else if (process.platform === 'darwin') { // macOS
-        exec(`open "${spectatorUrl}"`);
-      } else { // Linux
-        exec(`xdg-open "${spectatorUrl}"`);
-      }
+      const launchPromise = new Promise((resolve, reject) => {
+        if (process.platform === 'win32') {
+          exec(`start "" "${spectatorUrl}"`, (error) => {
+            if (error) {
+              console.error('Error launching spectator client:', error);
+              // We'll resolve anyway since the URL handler might work despite exec error
+              resolve(false);
+            } else {
+              resolve(true);
+            }
+          });
+        } else if (process.platform === 'darwin') { // macOS
+          exec(`open "${spectatorUrl}"`, (error) => {
+            if (error) {
+              console.error('Error launching spectator client:', error);
+              resolve(false);
+            } else {
+              resolve(true);
+            }
+          });
+        } else { // Linux
+          exec(`xdg-open "${spectatorUrl}"`, (error) => {
+            if (error) {
+              console.error('Error launching spectator client:', error);
+              resolve(false);
+            } else {
+              resolve(true);
+            }
+          });
+        }
+      });
       
-      console.log(`Spectator URL launched: ${spectatorUrl}`);
+      // Wait for launch with timeout
+      const launchResult = await Promise.race([
+        launchPromise,
+        new Promise(resolve => setTimeout(() => resolve(false), 5000))
+      ]);
+      
+      console.log(`Spectator URL launched: ${spectatorUrl} (success: ${launchResult})`);
       return true;
     } catch (error) {
       console.error('Error launching spectator:', error);
       throw error;
     }
+  }
+  
+  async waitForSpectatorLaunch(maxWaitTimeMs = 15000) {
+    console.log(`Waiting up to ${maxWaitTimeMs/1000} seconds for spectator client to launch...`);
+    
+    // Wait progressively with status checks
+    const startTime = Date.now();
+    const checkInterval = 1000; // Check every second
+    
+    while (Date.now() - startTime < maxWaitTimeMs) {
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+      
+      // Log progress
+      const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+      console.log(`Waiting for spectator client: ${elapsedSeconds}s elapsed`);
+    }
+    
+    console.log('Spectator client launch wait completed');
+    return true;
   }
   
   getPlatformId(region) {
