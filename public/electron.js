@@ -465,35 +465,94 @@ ipcMain.handle('test-start-stream', async () => {
       await streamService.connect(settings.obs.address, settings.obs.password);
     }
     
-    // Find a real game to stream - first check monitored accounts
-    console.log('Looking for an active game to stream...');
+    // Find a real game to stream - DIRECTLY use the accounts that are already marked as in-game
+    console.log('Looking for an active game to stream from monitored accounts...');
     const accounts = store.get('accounts') || [];
-    const activeAccounts = accounts.filter(acc => acc && acc.isActive);
+    
+    // Debug: Log all accounts and their in-game status
+    console.log('Current accounts and their game status:');
+    accounts.forEach(acc => {
+      if (acc) {
+        console.log(`- ${acc.summonerName || acc.gameName || 'Unknown'}: inGame=${acc.inGame}, gameId=${acc.gameId}`);
+      }
+    });
+    
+    // Filter accounts that are ALREADY marked as in-game based on stored data
+    const accountsInGame = accounts.filter(acc => acc && acc.inGame === true);
+    console.log(`Found ${accountsInGame.length} accounts currently in game according to stored data`);
     
     let accountWithGame = null;
     let gameData = null;
     
-    // Check if any monitored accounts are in game
-    for (const account of activeAccounts) {
-      try {
-        if (account && account.summonerName && account.region) {
-          console.log(`Checking if ${account.summonerName} is in game...`);
-          const checkResult = await leagueService.checkActiveGame(account.summonerName, account.region);
+    // If we have accounts marked as in-game, use the first one
+    if (accountsInGame.length > 0) {
+      accountWithGame = accountsInGame[0];
+      console.log(`Using account ${accountWithGame.summonerName || accountWithGame.gameName} which is already marked as in game`);
+      
+      // We already have the game data from the stored info
+      // For test streaming, we can use this directly
+      if (accountWithGame.gameId) {
+        console.log(`Using existing game ID: ${accountWithGame.gameId}`);
+        
+        // Create minimal game data structure with just the necessary fields
+        gameData = {
+          inGame: true,
+          gameId: accountWithGame.gameId,
+        };
+      } else {
+        // No gameId available, try to get fresh game data
+        try {
+          const identifier = accountWithGame.gameName && accountWithGame.tagLine 
+            ? `${accountWithGame.gameName}#${accountWithGame.tagLine}`
+            : accountWithGame.summonerName;
+            
+          console.log(`Getting game data for ${identifier} in ${accountWithGame.region}`);
+          const checkResult = await leagueService.checkActiveGame(identifier, accountWithGame.region);
           
           if (checkResult && checkResult.inGame) {
-            console.log(`Found active game for ${account.summonerName}`);
-            accountWithGame = account;
+            console.log(`Confirmed active game for ${identifier}`);
             gameData = checkResult;
-            break;
+          } else {
+            console.log(`Account ${identifier} was marked as in-game but no active game data found. It might have just ended.`);
           }
+        } catch (error) {
+          console.log(`Error checking game details for ${accountWithGame.summonerName || accountWithGame.gameName}:`, error.message);
         }
-      } catch (error) {
-        console.log(`Error checking game for ${account.summonerName}:`, error.message);
       }
     }
     
-    // If no monitored accounts are in game, use a featured game
-    if (!accountWithGame) {
+    // If no account with game was found from stored data, perform a fresh check on all accounts
+    if (!accountWithGame || !gameData) {
+      console.log('No valid in-game accounts found in stored data, performing fresh checks...');
+      
+      const activeAccounts = accounts.filter(acc => acc && acc.isActive);
+      
+      // Check active accounts one by one
+      for (const account of activeAccounts) {
+        try {
+          if (account && account.summonerName && account.region) {
+            const identifier = account.gameName && account.tagLine 
+              ? `${account.gameName}#${account.tagLine}`
+              : account.summonerName;
+              
+            console.log(`Checking if ${identifier} is in game...`);
+            const checkResult = await leagueService.checkActiveGame(identifier, account.region);
+            
+            if (checkResult && checkResult.inGame) {
+              console.log(`Found active game for ${identifier}`);
+              accountWithGame = account;
+              gameData = checkResult;
+              break;
+            }
+          }
+        } catch (error) {
+          console.log(`Error checking game for ${account.summonerName || account.gameName}:`, error.message);
+        }
+      }
+    }
+    
+    // If still no monitored accounts are in game, use a featured game
+    if (!accountWithGame || !gameData) {
       console.log('No monitored accounts in game, trying to get a featured game...');
       
       try {
@@ -543,7 +602,7 @@ ipcMain.handle('test-start-stream', async () => {
     // Try to update Twitch info if authenticated
     try {
       if (twitchService.accessToken) {
-        const title = `Test Stream: ${accountWithGame.summonerName} playing League of Legends`;
+        const title = `Test Stream: ${accountWithGame.summonerName || accountWithGame.gameName} playing League of Legends`;
         console.log('Updating Twitch stream info:', title);
         await twitchService.updateStreamInfo(title, 'League of Legends');
       }
@@ -553,12 +612,14 @@ ipcMain.handle('test-start-stream', async () => {
     }
     
     // Start the stream with the real game data
-    console.log(`Starting OBS stream for test using ${accountWithGame.summonerName}'s game...`);
+    // Use the correct ID format and pass minimal necessary data
+    console.log(`Starting OBS stream for test using ${accountWithGame.summonerName || accountWithGame.gameName}'s game...`);
     await streamService.startStream(
       gameData.gameId, 
-      accountWithGame.summonerName,
-      accountWithGame.summonerId,
-      accountWithGame.region
+      accountWithGame.summonerName || accountWithGame.gameName,
+      accountWithGame.summonerId || accountWithGame.id, // Use summonerId if available, fall back to account.id
+      accountWithGame.region,
+      gameData
     );
     
     // Update UI

@@ -120,7 +120,7 @@ class StreamService {
     }
   }
   
-  async startStream(gameId, accountName, summonerId, region) {
+  async startStream(gameId, accountName, summonerId, region, gameData = null) {
     try {
       if (!this.connected || !this.obs) {
         throw new Error('Not connected to OBS');
@@ -136,41 +136,55 @@ class StreamService {
         return true;
       }
       
-      // Get game data to obtain encryption key with retries
-      let gameData = null;
-      let attempts = 0;
-      const maxAttempts = 3;
+      // If gameData is provided directly, use it instead of fetching
+      let actualGameData = gameData;
       
-      while (!gameData && attempts < maxAttempts) {
-        attempts++;
-        try {
-          console.log(`Attempt ${attempts}/${maxAttempts} to get game data for ${summonerId}`);
-          gameData = await this.getGameInfo(summonerId, region);
-          
-          if (gameData) {
-            console.log('Game data retrieved successfully');
-            break;
-          } else {
-            console.log(`No game data found (attempt ${attempts}/${maxAttempts})`);
+      // Only fetch game data if not provided
+      if (!actualGameData) {
+        // Get game data to obtain encryption key with retries
+        let attempts = 0;
+        const maxAttempts = 3;
+        
+        while (!actualGameData && attempts < maxAttempts) {
+          attempts++;
+          try {
+            console.log(`Attempt ${attempts}/${maxAttempts} to get game data for ${summonerId}`);
+            actualGameData = await this.getGameInfo(summonerId, region);
+            
+            if (actualGameData) {
+              console.log('Game data retrieved successfully');
+              break;
+            } else {
+              console.log(`No game data found (attempt ${attempts}/${maxAttempts})`);
+              if (attempts < maxAttempts) {
+                // Wait before next attempt
+                await new Promise(resolve => setTimeout(resolve, 2000));
+              }
+            }
+          } catch (error) {
+            console.error(`Error getting game data (attempt ${attempts}/${maxAttempts}):`, error.message);
             if (attempts < maxAttempts) {
-              // Wait before next attempt
               await new Promise(resolve => setTimeout(resolve, 2000));
             }
           }
-        } catch (error) {
-          console.error(`Error getting game data (attempt ${attempts}/${maxAttempts}):`, error.message);
-          if (attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
-          }
+        }
+        
+        if (!actualGameData) {
+          throw new Error(`No active game data found for ${accountName} after ${maxAttempts} attempts`);
         }
       }
       
-      if (!gameData) {
-        throw new Error(`No active game data found for ${accountName} after ${maxAttempts} attempts`);
+      // When using just gameId (from stored data), create a minimal game data structure
+      if (actualGameData && !actualGameData.observers) {
+        console.log(`Creating minimal game data from gameId ${gameId}`);
+        actualGameData = {
+          gameId: gameId,
+          platformId: region // Use region as platformId for spectator URL
+        };
       }
       
       // Launch League spectator mode for the current game
-      await this.launchLeagueSpectator(gameData, region);
+      await this.launchLeagueSpectator(actualGameData, region);
       
       // Wait for spectator client to launch
       await this.waitForSpectatorLaunch(10000);
@@ -196,6 +210,7 @@ class StreamService {
       }
       
       // Start the stream
+      console.log('Starting OBS stream...');
       await this.obs.call('StartStream');
       
       this.streaming = true;
@@ -268,7 +283,7 @@ class StreamService {
         });
         
         const leagueSource = sceneItems.find(item => 
-          item.sourceName === 'League Game'
+          item.sourceName === 'League Game' || item.sourceName === 'League Game (Placeholder)'
         );
         
         if (!leagueSource) {
@@ -276,12 +291,46 @@ class StreamService {
         }
       } catch (error) {
         // Scene might exist but be empty
+        console.log('Error getting scene items, creating source anyway:', error.message);
         await this.createLeagueGameSource();
       }
       
       return true;
     } catch (error) {
       console.error('Error setting up League scene:', error);
+      
+      // If we still have a connection, try to create a basic fallback scene as a last resort
+      if (this.connected && this.obs) {
+        try {
+          console.log('Attempting to create fallback scene...');
+          
+          // Create a basic scene if it doesn't exist
+          await this.obs.call('CreateScene', {
+            sceneName: 'League Fallback'
+          });
+          
+          // Set as current scene
+          await this.obs.call('SetCurrentProgramScene', {
+            sceneName: 'League Fallback'
+          });
+          
+          // Add a text source
+          await this.obs.call('CreateInput', {
+            sceneName: 'League Fallback',
+            inputName: 'Info Text',
+            inputKind: 'text_ft2_source_v2',
+            inputSettings: {
+              text: 'League of Legends Stream\nGame capture not available - please configure manually'
+            }
+          });
+          
+          console.log('Created fallback scene successfully');
+          return true;
+        } catch (fallbackError) {
+          console.error('Failed to create fallback scene:', fallbackError);
+        }
+      }
+      
       throw error;
     }
   }
@@ -291,17 +340,80 @@ class StreamService {
       throw new Error('Not connected to OBS');
     }
     
-    // Create game capture source for League
-    await this.obs.call('CreateInput', {
-      sceneName: 'League of Legends',
-      inputName: 'League Game',
-      inputKind: 'game_capture',
-      inputSettings: {
-        window: 'League of Legends.exe',
-        window_match_priority: 1,
-        capture_mode: 'window'
+    // Different source types based on platform
+    if (process.platform === 'win32') {
+      // Windows - use game_capture
+      await this.obs.call('CreateInput', {
+        sceneName: 'League of Legends',
+        inputName: 'League Game',
+        inputKind: 'game_capture',
+        inputSettings: {
+          window: 'League of Legends.exe',
+          window_match_priority: 1,
+          capture_mode: 'window'
+        }
+      });
+    } else if (process.platform === 'darwin') {
+      // macOS - use display_capture or window_capture
+      try {
+        console.log('Creating display capture source for macOS');
+        await this.obs.call('CreateInput', {
+          sceneName: 'League of Legends',
+          inputName: 'League Game',
+          inputKind: 'display_capture',
+          inputSettings: {
+            // Display capture doesn't need specific window settings
+          }
+        });
+      } catch (error) {
+        console.log('Failed to create display_capture, trying window_capture:', error.message);
+        try {
+          await this.obs.call('CreateInput', {
+            sceneName: 'League of Legends',
+            inputName: 'League Game',
+            inputKind: 'window_capture',
+            inputSettings: {
+              // On macOS, we can't specify a window title as easily
+              // Just create the source and let user configure it manually
+            }
+          });
+        } catch (windowError) {
+          console.error('Failed to create window_capture:', windowError.message);
+          // Create a text source as a fallback
+          await this.obs.call('CreateInput', {
+            sceneName: 'League of Legends',
+            inputName: 'League Game (Placeholder)',
+            inputKind: 'text_ft2_source_v2',
+            inputSettings: {
+              text: 'League of Legends Stream\nPlease configure capture source manually'
+            }
+          });
+        }
       }
-    });
+    } else {
+      // Linux or other platforms - use window_capture
+      try {
+        await this.obs.call('CreateInput', {
+          sceneName: 'League of Legends',
+          inputName: 'League Game',
+          inputKind: 'window_capture',
+          inputSettings: {
+            // Window capture settings for Linux
+          }
+        });
+      } catch (error) {
+        console.error('Failed to create window_capture:', error.message);
+        // Fallback to a text source
+        await this.obs.call('CreateInput', {
+          sceneName: 'League of Legends',
+          inputName: 'League Game (Placeholder)',
+          inputKind: 'text_ft2_source_v2',
+          inputSettings: {
+            text: 'League of Legends Stream\nPlease configure capture source manually'
+          }
+        });
+      }
+    }
   }
   
   async getGameInfo(summonerId, region) {
@@ -331,77 +443,156 @@ class StreamService {
       const platformId = gameData.platformId || this.getPlatformId(region);
       const gameId = gameData.gameId;
       
-      // Handle case when observers might be in a different format or null
-      let encryptionKey = null;
-      if (gameData.observers) {
-        // Standard format
-        if (gameData.observers.encryptionKey) {
-          encryptionKey = gameData.observers.encryptionKey;
-        } 
-        // Featured game format
-        else if (typeof gameData.observers === 'string') {
-          encryptionKey = gameData.observers;
-        }
-      }
+      // Handle case when observers might be missing entirely (for minimal game data)
+      const encryptionKey = gameData.observers 
+        ? (typeof gameData.observers === 'string' ? gameData.observers : gameData.observers.encryptionKey)
+        : "";
       
       if (!platformId) {
         throw new Error(`Unsupported region: ${region}`);
       }
       
-      if (!encryptionKey) {
-        throw new Error('Missing encryption key in game data');
-      }
-      
-      // Create spectator URL with the correct format
-      const spectatorUrl = `riot:spectator:${platformId}:${gameId}:${encryptionKey}`;
-      
-      // Launch URL using child_process with platform-specific command
-      const launchPromise = new Promise((resolve, reject) => {
-        if (process.platform === 'win32') {
-          exec(`start "" "${spectatorUrl}"`, (error) => {
+      // For macOS, use a completely different approach - direct executable launch
+      if (process.platform === 'darwin') {
+        try {
+          // Find the League of Legends executable inside the app bundle
+          const leagueAppPath = '/Applications/League of Legends.app';
+          const leagueExePath = '/Applications/League of Legends.app/Contents/LoL/League of Legends.app/Contents/MacOS/LeagueClient';
+          
+          let spectateCommand;
+          
+          // First try to use LeagueClient executable directly with spectate args
+          if (encryptionKey) {
+            spectateCommand = `"${leagueExePath}" "--spectator-server=" "--spectator-endpoint=${platformId}" "--game-id=${gameId}" "--encryption-key=${encryptionKey}"`;
+          } else {
+            spectateCommand = `"${leagueExePath}" "--spectator-server=" "--spectator-endpoint=${platformId}" "--game-id=${gameId}"`;
+          }
+          
+          console.log(`Attempting to launch spectator with command: ${spectateCommand}`);
+          
+          // Try to run the command
+          exec(spectateCommand, (error, stdout, stderr) => {
             if (error) {
-              console.error('Error launching spectator client:', error);
-              // We'll resolve anyway since the URL handler might work despite exec error
-              resolve(false);
+              console.error('Error launching spectator with direct command:', error);
+              console.log('Falling back to app launch...');
+              
+              // Fall back to simply opening the app
+              exec(`open "${leagueAppPath}"`, (openError) => {
+                if (openError) {
+                  console.error('Error opening League app:', openError);
+                } else {
+                  console.log('Opened League app without spectator parameters');
+                }
+              });
             } else {
-              resolve(true);
+              console.log('Successfully launched spectator with direct command');
             }
           });
-        } else if (process.platform === 'darwin') { // macOS
-          exec(`open "${spectatorUrl}"`, (error) => {
+        } catch (macError) {
+          console.error('Error in macOS-specific spectator launch:', macError);
+          
+          // Fall back to simply opening the League app
+          exec(`open -a "League of Legends"`, (error) => {
             if (error) {
-              console.error('Error launching spectator client:', error);
-              resolve(false);
+              console.error('Error opening League app:', error);
             } else {
-              resolve(true);
-            }
-          });
-        } else { // Linux
-          exec(`xdg-open "${spectatorUrl}"`, (error) => {
-            if (error) {
-              console.error('Error launching spectator client:', error);
-              resolve(false);
-            } else {
-              resolve(true);
+              console.log('Opened League app as fallback');
             }
           });
         }
-      });
+      } else if (process.platform === 'win32') {
+        // Windows approach with the URL protocol
+        const spectatorUrl = encryptionKey 
+          ? `riot:spectator:${platformId}:${gameId}:${encryptionKey}`
+          : `riot:spectator:${platformId}:${gameId}`;
+        
+        exec(`start "" "${spectatorUrl}"`, (error) => {
+          if (error) {
+            console.error('Error launching spectator client on Windows:', error);
+          } else {
+            console.log('Launched spectator URL on Windows');
+          }
+        });
+      } else {
+        // Linux approach with the URL protocol
+        const spectatorUrl = encryptionKey 
+          ? `riot:spectator:${platformId}:${gameId}:${encryptionKey}`
+          : `riot:spectator:${platformId}:${gameId}`;
+        
+        exec(`xdg-open "${spectatorUrl}"`, (error) => {
+          if (error) {
+            console.error('Error launching spectator client on Linux:', error);
+          } else {
+            console.log('Launched spectator URL on Linux');
+          }
+        });
+      }
       
-      // Wait for launch with timeout
-      const launchResult = await Promise.race([
-        launchPromise,
-        new Promise(resolve => setTimeout(() => resolve(false), 5000))
-      ]);
-      
-      console.log(`Spectator URL launched: ${spectatorUrl} (success: ${launchResult})`);
+      // Return true regardless of client launch - we'll continue with streaming anyway
       return true;
     } catch (error) {
       console.error('Error launching spectator:', error);
-      throw error;
+      // Don't throw the error - just log it and continue with streaming
+      return false;
     }
   }
   
+  async launchSpectatorUrl(spectatorUrl) {
+    return new Promise((resolve, reject) => {
+      console.log(`Launching spectator URL: ${spectatorUrl}`);
+      
+      if (process.platform === 'win32') {
+        exec(`start "" "${spectatorUrl}"`, (error) => {
+          if (error) {
+            console.error('Error launching spectator client:', error);
+            resolve(false);
+          } else {
+            resolve(true);
+          }
+        });
+      } else if (process.platform === 'darwin') { // macOS
+        // On macOS, first try the standard open command
+        exec(`open "${spectatorUrl}"`, (error, stdout, stderr) => {
+          if (error) {
+            console.error('Standard open command failed:', error);
+            console.log('Trying alternative approach with osascript...');
+            
+            // If that fails, try using AppleScript
+            const appleScript = `
+              tell application "League of Legends"
+                activate
+              end tell
+              delay 1
+              open location "${spectatorUrl}"
+            `;
+            
+            exec(`osascript -e '${appleScript}'`, (scriptError, scriptStdout, scriptStderr) => {
+              if (scriptError) {
+                console.error('AppleScript approach failed:', scriptError);
+                resolve(false);
+              } else {
+                console.log('AppleScript approach succeeded');
+                resolve(true);
+              }
+            });
+          } else {
+            console.log('Standard open command succeeded');
+            resolve(true);
+          }
+        });
+      } else { // Linux
+        exec(`xdg-open "${spectatorUrl}"`, (error) => {
+          if (error) {
+            console.error('Error launching spectator client:', error);
+            resolve(false);
+          } else {
+            resolve(true);
+          }
+        });
+      }
+    });
+  }
+
   async waitForSpectatorLaunch(maxWaitTimeMs = 15000) {
     console.log(`Waiting up to ${maxWaitTimeMs/1000} seconds for spectator client to launch...`);
     
